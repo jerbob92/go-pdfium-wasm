@@ -41,7 +41,7 @@ func main() {
 	}
 
 	// Compile WebAssembly that requires its own "env" module.
-	compiled, err := r.CompileModule(ctx, pdfiumWasm, wazero.NewCompileConfig())
+	compiled, err := r.CompileModule(ctx, pdfiumWasm)
 	if err != nil {
 		log.Panicln(err)
 	}

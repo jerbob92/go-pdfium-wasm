@@ -16,7 +16,7 @@ import (
 //   - To add more functions to the "env" module, use FunctionExporter.
 //   - To instantiate into another wazero.Namespace, use FunctionExporter.
 func Instantiate(ctx context.Context, r wazero.Runtime) (api.Closer, error) {
-	builder := r.NewModuleBuilder("env")
+	builder := r.NewHostModuleBuilder("env")
 	NewFunctionExporter().ExportFunctions(builder)
 	return builder.Instantiate(ctx, r)
 }
@@ -24,9 +24,9 @@ func Instantiate(ctx context.Context, r wazero.Runtime) (api.Closer, error) {
 // FunctionExporter configures the functions in the "env" module used by
 // Emscripten.
 type FunctionExporter interface {
-	// ExportFunctions builds functions to export with a wazero.ModuleBuilder
+	// ExportFunctions builds functions to export with a wazero.HostModuleBuilder
 	// named "env".
-	ExportFunctions(builder wazero.ModuleBuilder)
+	ExportFunctions(builder wazero.HostModuleBuilder)
 }
 
 // NewFunctionExporter returns a FunctionExporter object with trace disabled.
@@ -37,33 +37,33 @@ func NewFunctionExporter() FunctionExporter {
 type functionExporter struct{}
 
 // ExportFunctions implements FunctionExporter.ExportFunctions
-func (e *functionExporter) ExportFunctions(builder wazero.ModuleBuilder) {
-	builder.ExportFunction("emscripten_notify_memory_growth", emscripten_notify_memory_growth)
-	builder.ExportFunction("setTempRet0", setTempRet0)
-	builder.ExportFunction("getTempRet0", getTempRet0)
-	builder.ExportFunction("_emscripten_throw_longjmp", emscripten_throw_longjmp)
+func (e *functionExporter) ExportFunctions(b wazero.HostModuleBuilder) {
+	b.NewFunctionBuilder().WithFunc(emscripten_notify_memory_growth).Export("emscripten_notify_memory_growth")
+	b.NewFunctionBuilder().WithFunc(setTempRet0).Export("setTempRet0")
+	b.NewFunctionBuilder().WithFunc(getTempRet0).Export("getTempRet0")
+	b.NewFunctionBuilder().WithFunc(emscripten_throw_longjmp).Export("_emscripten_throw_longjmp")
 
-	builder.ExportFunction("invoke_ii", invoke_ii)
-	builder.ExportFunction("invoke_iii", invoke_iii)
-	builder.ExportFunction("invoke_iiii", invoke_iiii)
-	builder.ExportFunction("invoke_iiiii", invoke_iiiii)
+	b.NewFunctionBuilder().WithFunc(invoke_ii).Export("invoke_ii")
+	b.NewFunctionBuilder().WithFunc(invoke_iii).Export("invoke_iii")
+	b.NewFunctionBuilder().WithFunc(invoke_iiii).Export("invoke_iiii")
+	b.NewFunctionBuilder().WithFunc(invoke_iiiii).Export("invoke_iiiii")
 
-	builder.ExportFunction("invoke_v", invoke_v)
-	builder.ExportFunction("invoke_vi", invoke_vi)
-	builder.ExportFunction("invoke_vii", invoke_vii)
-	builder.ExportFunction("invoke_viii", invoke_viii)
-	builder.ExportFunction("invoke_viiii", invoke_viiii)
+	b.NewFunctionBuilder().WithFunc(invoke_v).Export("invoke_v")
+	b.NewFunctionBuilder().WithFunc(invoke_vi).Export("invoke_vi")
+	b.NewFunctionBuilder().WithFunc(invoke_vii).Export("invoke_vii")
+	b.NewFunctionBuilder().WithFunc(invoke_viii).Export("invoke_viii")
+	b.NewFunctionBuilder().WithFunc(invoke_viiii).Export("invoke_viiii")
 
-	builder.ExportFunction("__syscall_mprotect", sys_mprotect)
-	builder.ExportFunction("__syscall_madvise1", sys_madvise1)
-	builder.ExportFunction("__syscall_fstat64", sys_fstat64)
-	builder.ExportFunction("__syscall_stat64", sys_stat64)
-	builder.ExportFunction("__syscall_lstat64", sys_lstat64)
-	builder.ExportFunction("__syscall_ftruncate64", sys_ftruncate64)
-	builder.ExportFunction("__syscall_getpid", sys_getpid)
-	builder.ExportFunction("__syscall_getdents64", sys_getdents64)
-	builder.ExportFunction("__syscall_unlink", sys_unlink)
-	builder.ExportFunction("__syscall_unlinkat", sys_unlinkat)
-	builder.ExportFunction("__syscall_rmdir", sys_rmdir)
-	builder.ExportFunction("__syscall_newfstatat", syscall_newfstatat)
+	b.NewFunctionBuilder().WithFunc(sys_mprotect).Export("__syscall_mprotect")
+	b.NewFunctionBuilder().WithFunc(sys_madvise1).Export("__syscall_madvise1")
+	b.NewFunctionBuilder().WithFunc(sys_fstat64).Export("__syscall_fstat64")
+	b.NewFunctionBuilder().WithFunc(sys_stat64).Export("__syscall_stat64")
+	b.NewFunctionBuilder().WithFunc(sys_lstat64).Export("__syscall_lstat64")
+	b.NewFunctionBuilder().WithFunc(sys_ftruncate64).Export("__syscall_ftruncate64")
+	b.NewFunctionBuilder().WithFunc(sys_getpid).Export("__syscall_getpid")
+	b.NewFunctionBuilder().WithFunc(sys_getdents64).Export("__syscall_getdents64")
+	b.NewFunctionBuilder().WithFunc(sys_unlink).Export("__syscall_unlink")
+	b.NewFunctionBuilder().WithFunc(sys_unlinkat).Export("__syscall_unlinkat")
+	b.NewFunctionBuilder().WithFunc(sys_rmdir).Export("__syscall_rmdir")
+	b.NewFunctionBuilder().WithFunc(syscall_newfstatat).Export("__syscall_newfstatat")
 }
