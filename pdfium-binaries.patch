@@ -1,165 +1,24 @@
-diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
-index 5bd00a5..425ac68 100644
---- a/.github/workflows/build.yml
-+++ b/.github/workflows/build.yml
-@@ -37,93 +37,6 @@ jobs:
-       fail-fast: false
-       matrix:
-         include:
--          - artifact: pdfium-android-arm
--            target_os: android
--            target_cpu: arm
--            runner: ubuntu-20.04
--
--          - artifact: pdfium-android-arm64
--            target_os: android
--            target_cpu: arm64
--            runner: ubuntu-20.04
--
--          - artifact: pdfium-android-x64
--            target_os: android
--            target_cpu: x64
--            runner: ubuntu-20.04
--
--          - artifact: pdfium-android-x86
--            target_os: android
--            target_cpu: x86
--            runner: ubuntu-20.04
--
--          - artifact: pdfium-ios-arm64
--            target_os: ios
--            target_cpu: arm64
--            runner: macos-latest
--
--          - artifact: pdfium-ios-x64
--            target_os: ios
--            target_cpu: x64
--            runner: macos-latest
--
--          - artifact: pdfium-linux-arm
--            target_os: linux
--            target_cpu: arm
--            runner: ubuntu-20.04
--
--          - artifact: pdfium-linux-arm64
--            target_os: linux
--            target_cpu: arm64
--            runner: ubuntu-20.04
--
--          - artifact: pdfium-linux-x64
--            target_os: linux
--            target_cpu: x64
--            runner: ubuntu-20.04
--
--          - artifact: pdfium-linux-x86
--            target_os: linux
--            target_cpu: x86
--            runner: ubuntu-20.04
--
--          - artifact: pdfium-linux-musl-x64
--            target_os: linux
--            target_libc: musl
--            target_cpu: x64
--            runner: ubuntu-20.04
--
--          - artifact: pdfium-linux-musl-x86
--            target_os: linux
--            target_libc: musl
--            target_cpu: x86
--            runner: ubuntu-20.04
--
--          - artifact: pdfium-mac-arm64
--            target_os: mac
--            target_cpu: arm64
--            runner: macos-latest
--
--          - artifact: pdfium-mac-x64
--            target_os: mac
--            target_cpu: x64
--            runner: macos-latest
--
--          - artifact: pdfium-win-arm64
--            target_os: win
--            target_cpu: arm64
--            runner: windows-2019
--
--          - artifact: pdfium-win-x64
--            target_os: win
--            target_cpu: x64
--            runner: windows-2019
--
--          - artifact: pdfium-win-x86
--            target_os: win
--            target_cpu: x86
--            runner: windows-2019
--
-           - artifact: pdfium-wasm
-             target_os: wasm
-             target_cpu: wasm
-@@ -192,61 +105,3 @@ jobs:
-           draft: true
-           artifacts: pdfium*.tgz
-           token: ${{ secrets.GITHUB_TOKEN }}
--
--  nuget:
--    name: Build NuGet packages
--    runs-on: windows-latest
--    needs: build
--    steps:
--      - name: Checkout
--        uses: actions/checkout@v2
--      - name: Download artifacts
--        uses: actions/download-artifact@v2
--        with:
--          path: nuget
--      - name: Pack
--        shell: bash
--        run: |
--          for NUSPEC in nuget/*.nuspec; do
--            echo "::group::$NUSPEC"
--            nuget pack "$NUSPEC" -properties "version=${{ github.event.inputs.version || '0.0.0.0' }};branch=${GITHUB_REF#refs/heads/};commit=${GITHUB_SHA}"
--            echo "::endgroup::"
--          done
--      - name: Upload artifact
--        uses: actions/upload-artifact@v2
--        with:
--          name: NuGet packages
--          path: '*.nupkg'
--      - name: Push to nuget.org
--        if: ${{ github.event.inputs.push_nuget }}
--        run: nuget push -Source nuget.org -ApiKey ${{ secrets.NUGET_API_KEY }} *.nupkg
--
--  publish:
--    name: Publish Release
--    if: ${{ github.event.inputs.repository }}
--    runs-on: ubuntu-latest
--    needs: build
--    steps:
--      - name: Write release body
--        run: echo 'This version was built with branch `${{ github.event.inputs.branch }}` of PDFium' > RELEASE.md
--      - name: Get changes
--        continue-on-error: true
--        run: |
--          CURRENT_REV=${{ github.event.inputs.branch }}
--          PREVIOUS_REV=$(curl --silent "https://api.github.com/repos/${{ github.repository_owner }}/${{ github.event.inputs.repository }}/releases/latest" | jq -r ".tag_name")
--          git clone -b "${{ github.event.inputs.branch }}" https://pdfium.googlesource.com/pdfium.git
--          cat <<END >> RELEASE.md
--          ### Changes
--          Commits between \`$PREVIOUS_REV\` and \`$CURRENT_REV\`:
--          END
--          git -C "pdfium" log origin/${PREVIOUS_REV}.. --pretty=format:'* [%s](https://pdfium.googlesource.com/pdfium/+/%H)' >> RELEASE.md
--      - name: Publish Release
--        uses: ncipollo/release-action@v1
--        with:
--          repo: ${{ github.event.inputs.repository }}
--          allowUpdates: true
--          bodyFile: RELEASE.md
--          draft: false
--          token: ${{ secrets.GITHUB_TOKEN }}
--          name: PDFium ${{ github.event.inputs.version }}
--          tag: ${{ github.event.inputs.branch }}
+diff --git a/patches/wasm/partition_allocator.patch b/patches/wasm/partition_allocator.patch
+deleted file mode 100644
+index cd349ba..0000000
+--- a/patches/wasm/partition_allocator.patch
++++ /dev/null
+@@ -1,13 +0,0 @@
+-diff --git a/partition_alloc_base/threading/platform_thread_posix.cc b/partition_alloc_base/threading/platform_thread_posix.cc
+-index 2c00380..ce93b92 100644
+---- a/partition_alloc_base/threading/platform_thread_posix.cc
+-+++ b/partition_alloc_base/threading/platform_thread_posix.cc
+-@@ -121,7 +121,7 @@ PlatformThreadId PlatformThread::CurrentId() {
+- #elif BUILDFLAG(IS_NACL) && !defined(__GLIBC__)
+-   // Pointers are 32-bits in NaCl.
+-   return reinterpret_cast<int32_t>(pthread_self());
+--#elif BUILDFLAG(IS_POSIX) && BUILDFLAG(IS_AIX)
+-+#elif BUILDFLAG(IS_POSIX) && (BUILDFLAG(IS_AIX) || defined(OS_ASMJS))
+-   return pthread_self();
+- #elif BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_AIX)
+-   return reinterpret_cast<int64_t>(pthread_self());
 diff --git a/steps/01-install.sh b/steps/01-install.sh
-index da9b55f..d98b316 100755
+index da9b55f..295a3b2 100755
 --- a/steps/01-install.sh
 +++ b/steps/01-install.sh
 @@ -55,8 +55,8 @@ case "$TARGET_OS-$TARGET_LIBC-$TARGET_CPU" in
@@ -168,8 +27,8 @@ index da9b55f..d98b316 100755
      pushd emsdk
 -    ./emsdk install 2.0.24
 -    ./emsdk activate 2.0.24
-+    ./emsdk install 3.1.18
-+    ./emsdk activate 3.1.18
++    ./emsdk install 3.1.24
++    ./emsdk activate 3.1.24
      echo "$PWD/upstream/emscripten" >> "$PATH_FILE"
      echo "$PWD/upstream/bin" >> "$PATH_FILE"
      popd
@@ -180,19 +39,67 @@ index da9b55f..d98b316 100755
 -fi
 \ No newline at end of file
 +fi
+diff --git a/steps/02-checkout.sh b/steps/02-checkout.sh
+index 3fcc8fe..3b279ac 100755
+--- a/steps/02-checkout.sh
++++ b/steps/02-checkout.sh
+@@ -18,10 +18,10 @@ echo "target_os = [ '$OS' ]" >> .gclient
+ 
+ # Reset
+ if [ -e 'pdfium' ]; then
+-  for folder in pdfium pdfium/build pdfium/third_party/libjpeg_turbo pdfium/base/allocator/partition_allocator; do
++  for folder in pdfium pdfium/build pdfium/third_party/libjpeg_turbo; do
+     git -C $folder reset --hard
+     git -C $folder clean -df
+   done
+ fi
+ 
+-gclient sync -r "origin/${PDFium_BRANCH:-main}" --no-history --shallow
+\ No newline at end of file
++gclient sync -r "origin/${PDFium_BRANCH:-main}" --no-history --shallow
+diff --git a/steps/03-patch.sh b/steps/03-patch.sh
+index d3fec87..ff7373a 100755
+--- a/steps/03-patch.sh
++++ b/steps/03-patch.sh
+@@ -26,7 +26,6 @@ case "$OS" in
+   wasm)
+     git apply -v "$PATCHES/wasm/pdfium.patch"
+     git -C build apply -v "$PATCHES/wasm/build.patch"
+-    git -C base/allocator/partition_allocator apply -v "$PATCHES/wasm/partition_allocator.patch"
+     mkdir -p "build/toolchain/wasm"
+     cp "$PATCHES/wasm/toolchain.gn" "build/toolchain/wasm/BUILD.gn"
+     mkdir -p "build/config/wasm"
+diff --git a/steps/05-configure.sh b/steps/05-configure.sh
+index 7687e22..bd9c9d8 100755
+--- a/steps/05-configure.sh
++++ b/steps/05-configure.sh
+@@ -31,6 +31,7 @@ mkdir -p "$BUILD"
+       ;;
+     wasm):
+       echo 'pdf_is_complete_lib = true'
++      echo 'pdf_use_partition_alloc = false'
+       echo 'is_clang = false'
+       ;;
+   esac
+@@ -48,4 +49,4 @@ mkdir -p "$BUILD"
+ # Generate Ninja files
+ pushd "$SOURCE"
+ gn gen "$BUILD"
+-popd
+\ No newline at end of file
++popd
 diff --git a/steps/06-build.sh b/steps/06-build.sh
-index d10f7a6..293a485 100755
+index 27dbcb0..fd7b908 100755
 --- a/steps/06-build.sh
 +++ b/steps/06-build.sh
-@@ -14,8 +14,12 @@ if [ "$TARGET_CPU" == "wasm" ]; then
-     -s LLD_REPORT_UNDEFINED \
+@@ -15,8 +15,11 @@ if [ "$TARGET_CPU" == "wasm" ]; then
      -s WASM=1 \
      -s ALLOW_MEMORY_GROWTH=1 \
-+    -s STANDALONE_WASM=1 \
-+    -s WASMFS=1 \
+     -s STANDALONE_WASM=1 \
 +    --profile \
 +    -g \
      -s EXPORTED_RUNTIME_METHODS='["ccall", "cwrap"]' \
++    -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
      -o "$BUILD_DIR/pdfium.html" \
      "$LIBPDFIUMA" \
      --no-entry

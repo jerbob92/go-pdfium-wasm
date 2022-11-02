@@ -1,0 +1,255 @@
+diff --git a/system/include/wasi/api.h b/system/include/wasi/api.h
+index f3bb425f6..117a8da46 100644
+--- a/system/include/wasi/api.h
++++ b/system/include/wasi/api.h
+@@ -1008,6 +1008,19 @@ typedef uint32_t __wasi_lookupflags_t;
+ _Static_assert(sizeof(__wasi_lookupflags_t) == 4, "witx calculated size");
+ _Static_assert(_Alignof(__wasi_lookupflags_t) == 4, "witx calculated align");
+ 
++/**
++ * Default FD for the root folder.
++ * Why file descriptor 3?
++ * While not specified, the most common WASI implementation, wasi-libc, expects
++ * POSIX style file descriptor allocation, where the lowest available number is
++ * used to open the next file. Since 1 and 2 are taken by stdout and stderr,
++ * `root` is assigned 3.
++ *   - https://github.com/WebAssembly/WASI/issues/122
++ *   - https://pubs.opengroup.org/onlinepubs/9699919799/functions/V2_chap02.html#tag_15_14
++ *   - https://github.com/WebAssembly/wasi-libc/blob/wasi-sdk-16/libc-bottom-half/sources/preopens.c#L215
++ */
++#define __WASI_FD_ROOT 3
++
+ /**
+  * Open flags used by `path_open`.
+  */
+diff --git a/system/lib/standalone/standalone.c b/system/lib/standalone/standalone.c
+index 7b11a8131..cc3f7f4e7 100644
+--- a/system/lib/standalone/standalone.c
++++ b/system/lib/standalone/standalone.c
+@@ -14,6 +14,8 @@
+ #include <syscall_arch.h>
+ #include <time.h>
+ #include <unistd.h>
++#include <fcntl.h>
++#include <sys/stat.h>
+ 
+ #include <emscripten.h>
+ #include <emscripten/heap.h>
+@@ -81,22 +83,112 @@ __attribute__((__weak__)) int _munmap_js(
+   return -ENOSYS;
+ }
+ 
++// Import the VM's fd_write under a different name. Then we can interpose in
++// between it and WasmFS's fd_write. That is, libc calls fd_write, which WasmFS
++// implements. And WasmFS will forward actual writing to stdout/stderr to the
++// VM's fd_write. (This allows WasmFS to do work in the middle, for example, it
++// could support embedded files and other functionality.)
++__attribute__((import_module("wasi_snapshot_preview1"),
++import_name("fd_write"))) __wasi_errno_t
++imported__wasi_fd_write(__wasi_fd_t fd,
++                        const __wasi_ciovec_t* iovs,
++                        size_t iovs_len,
++                        __wasi_size_t* nwritten);
++
++// Write a buffer + a newline.
++static void wasi_writeln(__wasi_fd_t fd, char* buffer) {
++    struct __wasi_ciovec_t iovs[2];
++    iovs[0].buf = (uint8_t*)buffer;
++    iovs[0].buf_len = strlen(buffer);
++    iovs[1].buf = (uint8_t*)"\n";
++    iovs[1].buf_len = 1;
++    __wasi_size_t nwritten;
++    imported__wasi_fd_write(fd, iovs, 2, &nwritten);
++}
++
++void _emscripten_out(char* text) { wasi_writeln(1, text); }
++
++void _emscripten_err(char* text) { wasi_writeln(2, text); }
++
+ // open(), etc. - we just support the standard streams, with no
+ // corner case error checking; everything else is not permitted.
+ // TODO: full file support for WASI, or an option for it
+ // open()
+ __attribute__((__weak__))
+ int __syscall_openat(int dirfd, intptr_t path, int flags, ...) {
+-  if (!strcmp((const char*)path, "/dev/stdin")) {
++  const char* pathname = (const char*)path;
++  if (!strcmp(pathname, "/dev/stdin")) {
+     return STDIN_FILENO;
+   }
+-  if (!strcmp((const char*)path, "/dev/stdout")) {
++  if (!strcmp(pathname, "/dev/stdout")) {
+     return STDOUT_FILENO;
+   }
+-  if (!strcmp((const char*)path, "/dev/stderr")) {
++  if (!strcmp(pathname, "/dev/stderr")) {
+     return STDERR_FILENO;
+   }
+-  return -EPERM;
++
++  if (pathname[0] == '/') {
++    dirfd = __WASI_FD_ROOT;
++  }
++
++  // Compute rights corresponding with the access modes provided.
++  // Attempt to obtain all rights, except the ones that contradict the
++  // access mode provided to openat().
++  __wasi_rights_t max =
++    ~(__WASI_RIGHTS_FD_DATASYNC | __WASI_RIGHTS_FD_READ |
++      __WASI_RIGHTS_FD_WRITE | __WASI_RIGHTS_FD_ALLOCATE |
++      __WASI_RIGHTS_FD_READDIR | __WASI_RIGHTS_FD_FILESTAT_SET_SIZE);
++  switch (flags & O_ACCMODE) {
++    case O_RDONLY:
++    case O_RDWR:
++    case O_WRONLY:
++      if ((flags & O_RDONLY) != 0) {
++        max |= __WASI_RIGHTS_FD_READ | __WASI_RIGHTS_FD_READDIR;
++      }
++      if ((flags & O_WRONLY) != 0) {
++        max |= __WASI_RIGHTS_FD_DATASYNC | __WASI_RIGHTS_FD_WRITE |
++               __WASI_RIGHTS_FD_ALLOCATE |
++               __WASI_RIGHTS_FD_FILESTAT_SET_SIZE;
++      }
++      break;
++    case O_EXEC: // O_EXEC => O_PATH => 010000000
++    //case O_SEARCH: O_SEARCH => O_PATH => 010000000, both are the same, so causes errors.
++      break;
++    default:
++      errno = EINVAL;
++      return -1;
++  }
++
++  // Ensure that we can actually obtain the minimal rights needed.
++  __wasi_fdstat_t fsb_cur;
++  __wasi_errno_t error = __wasi_fd_fdstat_get(dirfd, &fsb_cur);
++  if (error != 0) {
++    errno = error;
++    return -1;
++  }
++
++  // Path lookup properties.
++  __wasi_lookupflags_t lookup_flags = 0;
++  if ((flags & O_NOFOLLOW) == 0)
++    lookup_flags |= __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW;
++
++  // Open file with appropriate rights.
++  __wasi_fdflags_t fs_flags = flags & 0xfff;
++  __wasi_rights_t fs_rights_base = max & fsb_cur.fs_rights_inheriting;
++  __wasi_rights_t fs_rights_inheriting = fsb_cur.fs_rights_inheriting;
++  __wasi_fd_t newfd;
++
++
++  // Remove 2 from the pathname to get rid of the null terminator.
++  error = __wasi_path_open(dirfd, lookup_flags, pathname, strlen(pathname)-2,
++                           (flags >> 12) & 0xfff,
++                           fs_rights_base, fs_rights_inheriting, fs_flags,
++                           &newfd);
++  if (error != 0) {
++    errno = error;
++    return -1;
++  }
++  return newfd;
+ }
+ 
+ __attribute__((__weak__)) int __syscall_ioctl(int fd, int op, ...) {
+@@ -107,15 +199,68 @@ __attribute__((__weak__)) int __syscall_fcntl64(int fd, int cmd, ...) {
+   return -ENOSYS;
+ }
+ 
++void to_public_stat(const __wasi_filestat_t *in,
++                                  struct stat *out) {
++  *out = (struct stat){
++    .st_dev = in->dev,
++    .st_ino = in->ino,
++    .st_nlink = in->nlink,
++    .st_size = in->size,
++    .st_atim = __wasi_timestamp_to_timespec(in->atim),
++    .st_mtim = __wasi_timestamp_to_timespec(in->mtim),
++    .st_ctim = __wasi_timestamp_to_timespec(in->ctim),
++  };
++
++  // Convert file type to legacy types encoded in st_mode.
++  switch (in->filetype) {
++    case __WASI_FILETYPE_BLOCK_DEVICE:
++      out->st_mode |= S_IFBLK;
++      break;
++    case __WASI_FILETYPE_CHARACTER_DEVICE:
++      out->st_mode |= S_IFCHR;
++      break;
++    case __WASI_FILETYPE_DIRECTORY:
++      out->st_mode |= S_IFDIR;
++      break;
++    case __WASI_FILETYPE_REGULAR_FILE:
++      out->st_mode |= S_IFREG;
++      break;
++    case __WASI_FILETYPE_SOCKET_DGRAM:
++    case __WASI_FILETYPE_SOCKET_STREAM:
++      out->st_mode |= S_IFSOCK;
++      break;
++    case __WASI_FILETYPE_SYMBOLIC_LINK:
++      out->st_mode |= S_IFLNK;
++      break;
++  }
++}
++
+ __attribute__((__weak__)) int __syscall_fstat64(int fd, intptr_t buf) {
+-  return -ENOSYS;
++    const char * path = (const char *)"";
++    int flag = AT_FDCWD;
++
++    // Create lookup properties.
++    __wasi_lookupflags_t lookup_flags = 0;
++    if ((flag & AT_SYMLINK_NOFOLLOW) == 0)
++        lookup_flags |= __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW;
++
++    // Perform system call.
++    __wasi_filestat_t internal_stat;
++    __wasi_errno_t error =
++            __wasi_path_filestat_get(fd, lookup_flags, path, 0, &internal_stat);
++    if (error != 0) {
++        errno = error;
++        return -1;
++    }
++    to_public_stat(&internal_stat, (struct stat*) buf);
++    return 0;
+ }
+ 
+ // There is no good source of entropy without an import. Make this weak so that
+ // it can be replaced with a pRNG or a proper import.
+ __attribute__((__weak__))
+ int getentropy(void* buffer, size_t length) {
+-  abort();
++    return __wasi_syscall_ret(__wasi_random_get(buffer, length));
+ }
+ 
+ // Emscripten additions
+@@ -193,29 +338,3 @@ void _wasmfs_get_preloaded_child_path(int index, void* buffer) {}
+ 
+ void _wasmfs_get_preloaded_path_name(int index, void* buffer) {}
+ 
+-// Import the VM's fd_write under a different name. Then we can interpose in
+-// between it and WasmFS's fd_write. That is, libc calls fd_write, which WasmFS
+-// implements. And WasmFS will forward actual writing to stdout/stderr to the
+-// VM's fd_write. (This allows WasmFS to do work in the middle, for example, it
+-// could support embedded files and other functionality.)
+-__attribute__((import_module("wasi_snapshot_preview1"),
+-               import_name("fd_write"))) __wasi_errno_t
+-imported__wasi_fd_write(__wasi_fd_t fd,
+-                        const __wasi_ciovec_t* iovs,
+-                        size_t iovs_len,
+-                        __wasi_size_t* nwritten);
+-
+-// Write a buffer + a newline.
+-static void wasi_writeln(__wasi_fd_t fd, char* buffer) {
+-  struct __wasi_ciovec_t iovs[2];
+-  iovs[0].buf = (uint8_t*)buffer;
+-  iovs[0].buf_len = strlen(buffer);
+-  iovs[1].buf = (uint8_t*)"\n";
+-  iovs[1].buf_len = 1;
+-  __wasi_size_t nwritten;
+-  imported__wasi_fd_write(fd, iovs, 2, &nwritten);
+-}
+-
+-void _emscripten_out(char* text) { wasi_writeln(1, text); }
+-
+-void _emscripten_err(char* text) { wasi_writeln(2, text); }
