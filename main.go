@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	_ "embed"
+	"image"
 	"log"
 	"os"
 
@@ -26,7 +27,7 @@ func main() {
 	// Set context to one that has an experimental listener
 	ctx := context.WithValue(context.Background(), experimental.FunctionListenerFactoryKey{}, logging.NewLoggingListenerFactory(os.Stdout))
 
-	//ctx := context.Background()
+	//ctx = context.Background()
 	// Create a new WebAssembly Runtime.
 	r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter())
 	defer r.Close(ctx) // This closes everything this Runtime created.
@@ -40,19 +41,12 @@ func main() {
 		log.Panicln(err)
 	}
 
-	// Compile WebAssembly that requires its own "env" module.
-	compiled, err := r.CompileModule(ctx, pdfiumWasm, wazero.NewCompileConfig())
+	compiled, err := r.CompileModule(ctx, pdfiumWasm)
 	if err != nil {
 		log.Panicln(err)
 	}
 
-	mod, err := r.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithStdout(os.Stdout).WithStderr(os.Stderr).WithRandSource(rand.Reader).WithFS(os.DirFS("")))
-	if err != nil {
-		log.Panicln(err)
-	}
-
-	// We need to call this Emscripten _initialize because PDFium has no main method.
-	_, err = mod.ExportedFunction("_initialize").Call(ctx)
+	mod, err := r.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithStartFunctions("_initialize").WithStdout(os.Stdout).WithStderr(os.Stderr).WithRandSource(rand.Reader).WithFS(os.DirFS("")))
 	if err != nil {
 		log.Panicln(err)
 	}
@@ -64,33 +58,49 @@ func main() {
 
 	log.Println(openRet)
 
-	//malloc := mod.ExportedFunction("malloc")
-	//free := mod.ExportedFunction("free")
+	malloc := mod.ExportedFunction("malloc")
+	free := mod.ExportedFunction("free")
+
+	path, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("could not get cwd: %v", err)
+	}
+
+	filePath := path + "/pdf-test.pdf"
+	filePathSize := uint64(len(filePath))
+
+	results, err := malloc.Call(ctx, filePathSize)
+	if err != nil {
+		log.Panicln(err)
+	}
+	filePathPtr := results[0]
+	defer free.Call(ctx, filePathPtr, filePathSize)
+
+	// The pointer is a linear memory offset, which is where we write the name.
+	if !mod.Memory().Write(ctx, uint32(filePathPtr), []byte(filePath)) {
+		log.Panicf("Memory.Write(%d, %d) out of range of memory size %d",
+			filePathPtr, filePathSize, mod.Memory().Size(ctx))
+	}
+
+	doc, err := mod.ExportedFunction("FPDF_LoadDocument").Call(ctx, filePathPtr, 0)
+	if err != nil {
+		log.Panicln(err)
+	}
+
+	log.Println("Got doc")
+	log.Println(doc)
+
+	errorCode, err := mod.ExportedFunction("FPDF_GetLastError").Call(ctx)
+	if err != nil {
+		log.Panicln(err)
+	}
+
+	log.Println("Errorcode")
+	log.Println(errorCode)
+	return
 
 	/*
-		filePath := "test.pdf"
-		filePathSize := uint64(len(filePath))
-
-		results, err := malloc.Call(ctx, filePathSize)
-		if err != nil {
-			log.Panicln(err)
-		}
-		filePathPtr := results[0]
-		defer free.Call(ctx, filePathPtr, filePathSize)
-
-		// The pointer is a linear memory offset, which is where we write the name.
-		if !mod.Memory().Write(ctx, uint32(filePathPtr), []byte(filePath)) {
-			log.Panicf("Memory.Write(%d, %d) out of range of memory size %d",
-				filePathPtr, filePathSize, mod.Memory().Size(ctx))
-		}
-
-		doc, err := mod.ExportedFunction("FPDF_LoadDocument").Call(ctx, filePathPtr, 0)
-		if err != nil {
-			log.Panicln(err)
-		}*/
-
-	/*
-		fileData, err := ioutil.ReadFile("test.pdf")
+		fileData, err := ioutil.ReadFile(filePath)
 		if err != nil {
 			log.Panicln(err)
 		}
@@ -122,5 +132,48 @@ func main() {
 		}
 
 		log.Println("Errorcode")
-		log.Println(errorCode)*/
+		log.Println(errorCode)
+	*/
+
+	img := image.NewRGBA(image.Rect(0, 0, 2000, 2000))
+
+	results, err = malloc.Call(ctx, uint64(len(img.Pix)))
+	if err != nil {
+		log.Panicln(err)
+	}
+
+	bitmap, err := mod.ExportedFunction("FPDFBitmap_CreateEx").Call(ctx, 2000, 2000, 4, results[0], uint64(img.Stride))
+	if err != nil {
+		log.Panicln(err)
+	}
+
+	log.Println("bitmap")
+	log.Println(bitmap)
+
+	fill, err := mod.ExportedFunction("FPDFBitmap_FillRect").Call(ctx, bitmap[0], 0, 0, 2000, 2000, 0xFFFFFFFF)
+	if err != nil {
+		log.Panicln(err)
+	}
+
+	log.Println("fill")
+	log.Println(fill)
+
+	//log.Println(mod.ExportedMemory("asm"))
+	//log.Println(r.Module("asm").ExportedMemory("__indirect_function_table"))
+
+	page, err := mod.ExportedFunction("FPDF_LoadPage").Call(ctx, doc[0], 0)
+	if err != nil {
+		log.Panicln(err)
+	}
+
+	log.Println("page")
+	log.Println(page)
+	/*
+		render, err := mod.ExportedFunction("FPDF_RenderPageBitmap").Call(ctx, bitmap[0], 0, 0, 2000, 2000, 0xFFFFFFFF)
+		if err != nil {
+			log.Panicln(err)
+		}
+
+		log.Println("render")
+		log.Println(render)*/
 }

@@ -2,8 +2,8 @@ package imports
 
 import "log"
 
-func emscripten_notify_memory_growth(_ int32) {
-	log.Fatal("Called into emscripten_notify_memory_growth")
+func emscripten_notify_memory_growth(i int32) {
+	log.Printf("Called into emscripten_notify_memory_growth with argument %d", i)
 }
 
 var tempRet0 = int32(0)

@@ -64,3 +64,70 @@ func syscall_newfstatat(int32, int32, int32, int32) int32 {
 	log.Fatal("Called into __syscall_newfstatat")
 	return 0
 }
+
+func abort() {
+	log.Fatal("Called into abort")
+}
+func time(int32) int32 {
+	log.Fatal("Called into time")
+	return 0
+}
+
+func gettimeofday(int32, int32) int32 {
+	log.Fatal("Called into gettimeofday")
+	return 0
+}
+
+func sys_open(int32, int32, int32) int32 {
+	log.Fatal("Called into sys_open")
+	return 0
+}
+
+func sys_fcntl64(int32, int32, int32) int32 {
+	log.Fatal("Called into sys_fcntl64")
+	return 0
+}
+
+func sys_ioctl(int32, int32, int32) int32 {
+	log.Fatal("Called into sys_ioctl")
+	return 0
+}
+
+func sys_mmap2(int32, int32, int32, int32, int32, int32) int32 {
+	log.Fatal("Called into sys_mmap2")
+	return 0
+}
+
+func sys_munmap(int32, int32) int32 {
+	log.Fatal("Called into sys_munmap")
+	return 0
+}
+
+func gmtime_r(int32, int32) int32 {
+	log.Fatal("Called into gmtime_r")
+	return 0
+}
+
+func localtime_r(int32, int32) int32 {
+	log.Fatal("Called into localtime_r")
+	return 0
+}
+
+func strftime_l(int32, int32, int32, int32, int32) int32 {
+	log.Fatal("Called into strftime_l")
+	return 0
+}
+
+func emscripten_resize_heap(int32) int32 {
+	log.Fatal("Called into emscripten_resize_heap")
+	return 0
+}
+
+func emscripten_memcpy_big(int32, int32, int32) int32 {
+	log.Fatal("Called into emscripten_memcpy_big")
+	return 0
+}
+
+func FXSYS_timePx(int32) int64 { return 0 }
+
+func FXSYS_localtimePKx(int32) int32 { return 0 }
