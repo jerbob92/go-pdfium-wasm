@@ -27,7 +27,7 @@ func main() {
 	// Set context to one that has an experimental listener
 	ctx := context.WithValue(context.Background(), experimental.FunctionListenerFactoryKey{}, logging.NewLoggingListenerFactory(os.Stdout))
 
-	//ctx = context.Background()
+	ctx = context.Background()
 	// Create a new WebAssembly Runtime.
 	r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter())
 	defer r.Close(ctx) // This closes everything this Runtime created.
@@ -67,7 +67,7 @@ func main() {
 	}
 
 	filePath := path + "/pdf-test.pdf"
-	filePathSize := uint64(len(filePath))
+	filePathSize := uint64(len(filePath)) + 1
 
 	results, err := malloc.Call(ctx, filePathSize)
 	if err != nil {
@@ -97,7 +97,6 @@ func main() {
 
 	log.Println("Errorcode")
 	log.Println(errorCode)
-	return
 
 	/*
 		fileData, err := ioutil.ReadFile(filePath)
@@ -168,12 +167,12 @@ func main() {
 
 	log.Println("page")
 	log.Println(page)
-	/*
-		render, err := mod.ExportedFunction("FPDF_RenderPageBitmap").Call(ctx, bitmap[0], 0, 0, 2000, 2000, 0xFFFFFFFF)
-		if err != nil {
-			log.Panicln(err)
-		}
 
-		log.Println("render")
-		log.Println(render)*/
+	render, err := mod.ExportedFunction("FPDF_RenderPageBitmap").Call(ctx, bitmap[0], page[0], 0, 0, 2000, 2000, 0, 0x10)
+	if err != nil {
+		log.Panicln(err)
+	}
+
+	log.Println("render")
+	log.Println(render)
 }

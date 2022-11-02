@@ -23,7 +23,7 @@ index f3bb425f6..117a8da46 100644
   * Open flags used by `path_open`.
   */
 diff --git a/system/lib/standalone/standalone.c b/system/lib/standalone/standalone.c
-index 7b11a8131..cc3f7f4e7 100644
+index 7b11a8131..4d305e23a 100644
 --- a/system/lib/standalone/standalone.c
 +++ b/system/lib/standalone/standalone.c
 @@ -14,6 +14,8 @@
@@ -35,7 +35,7 @@ index 7b11a8131..cc3f7f4e7 100644
  
  #include <emscripten.h>
  #include <emscripten/heap.h>
-@@ -81,22 +83,112 @@ __attribute__((__weak__)) int _munmap_js(
+@@ -81,22 +83,110 @@ __attribute__((__weak__)) int _munmap_js(
    return -ENOSYS;
  }
  
@@ -138,9 +138,7 @@ index 7b11a8131..cc3f7f4e7 100644
 +  __wasi_rights_t fs_rights_inheriting = fsb_cur.fs_rights_inheriting;
 +  __wasi_fd_t newfd;
 +
-+
-+  // Remove 2 from the pathname to get rid of the null terminator.
-+  error = __wasi_path_open(dirfd, lookup_flags, pathname, strlen(pathname)-2,
++  error = __wasi_path_open(dirfd, lookup_flags, pathname, strlen(pathname),
 +                           (flags >> 12) & 0xfff,
 +                           fs_rights_base, fs_rights_inheriting, fs_flags,
 +                           &newfd);
@@ -152,7 +150,7 @@ index 7b11a8131..cc3f7f4e7 100644
  }
  
  __attribute__((__weak__)) int __syscall_ioctl(int fd, int op, ...) {
-@@ -107,15 +199,68 @@ __attribute__((__weak__)) int __syscall_fcntl64(int fd, int cmd, ...) {
+@@ -107,15 +197,68 @@ __attribute__((__weak__)) int __syscall_fcntl64(int fd, int cmd, ...) {
    return -ENOSYS;
  }
  
@@ -223,7 +221,7 @@ index 7b11a8131..cc3f7f4e7 100644
  }
  
  // Emscripten additions
-@@ -193,29 +338,3 @@ void _wasmfs_get_preloaded_child_path(int index, void* buffer) {}
+@@ -193,29 +336,3 @@ void _wasmfs_get_preloaded_child_path(int index, void* buffer) {}
  
  void _wasmfs_get_preloaded_path_name(int index, void* buffer) {}
  
