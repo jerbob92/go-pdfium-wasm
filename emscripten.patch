@@ -23,7 +23,7 @@ index f3bb425f6..117a8da46 100644
   * Open flags used by `path_open`.
   */
 diff --git a/system/lib/standalone/standalone.c b/system/lib/standalone/standalone.c
-index 7b11a8131..4d305e23a 100644
+index 7b11a8131..5657b000d 100644
 --- a/system/lib/standalone/standalone.c
 +++ b/system/lib/standalone/standalone.c
 @@ -14,6 +14,8 @@
@@ -35,7 +35,7 @@ index 7b11a8131..4d305e23a 100644
  
  #include <emscripten.h>
  #include <emscripten/heap.h>
-@@ -81,22 +83,110 @@ __attribute__((__weak__)) int _munmap_js(
+@@ -81,22 +83,109 @@ __attribute__((__weak__)) int _munmap_js(
    return -ENOSYS;
  }
  
@@ -122,9 +122,8 @@ index 7b11a8131..4d305e23a 100644
 +  // Ensure that we can actually obtain the minimal rights needed.
 +  __wasi_fdstat_t fsb_cur;
 +  __wasi_errno_t error = __wasi_fd_fdstat_get(dirfd, &fsb_cur);
-+  if (error != 0) {
-+    errno = error;
-+    return -1;
++  if (error != __WASI_ERRNO_SUCCESS) {
++    return __wasi_syscall_ret(error);
 +  }
 +
 +  // Path lookup properties.
@@ -142,15 +141,15 @@ index 7b11a8131..4d305e23a 100644
 +                           (flags >> 12) & 0xfff,
 +                           fs_rights_base, fs_rights_inheriting, fs_flags,
 +                           &newfd);
-+  if (error != 0) {
-+    errno = error;
-+    return -1;
++  if (error != __WASI_ERRNO_SUCCESS) {
++    return __wasi_syscall_ret(error);
 +  }
++
 +  return newfd;
  }
  
  __attribute__((__weak__)) int __syscall_ioctl(int fd, int op, ...) {
-@@ -107,15 +197,68 @@ __attribute__((__weak__)) int __syscall_fcntl64(int fd, int cmd, ...) {
+@@ -107,15 +196,59 @@ __attribute__((__weak__)) int __syscall_fcntl64(int fd, int cmd, ...) {
    return -ENOSYS;
  }
  
@@ -192,36 +191,28 @@ index 7b11a8131..4d305e23a 100644
 +
  __attribute__((__weak__)) int __syscall_fstat64(int fd, intptr_t buf) {
 -  return -ENOSYS;
-+    const char * path = (const char *)"";
-+    int flag = AT_FDCWD;
-+
-+    // Create lookup properties.
-+    __wasi_lookupflags_t lookup_flags = 0;
-+    if ((flag & AT_SYMLINK_NOFOLLOW) == 0)
-+        lookup_flags |= __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW;
-+
-+    // Perform system call.
-+    __wasi_filestat_t internal_stat;
-+    __wasi_errno_t error =
-+            __wasi_path_filestat_get(fd, lookup_flags, path, 0, &internal_stat);
-+    if (error != 0) {
-+        errno = error;
-+        return -1;
-+    }
-+    to_public_stat(&internal_stat, (struct stat*) buf);
-+    return 0;
++  // Perform system call.
++  __wasi_filestat_t internal_stat;
++  __wasi_errno_t error =
++    __wasi_fd_filestat_get(fd, &internal_stat);
++  if (error != __WASI_ERRNO_SUCCESS) {
++    return __wasi_syscall_ret(error);
++  }
++  to_public_stat(&internal_stat, (struct stat *) buf);
++  return 0;
  }
  
  // There is no good source of entropy without an import. Make this weak so that
  // it can be replaced with a pRNG or a proper import.
  __attribute__((__weak__))
- int getentropy(void* buffer, size_t length) {
+-int getentropy(void* buffer, size_t length) {
 -  abort();
-+    return __wasi_syscall_ret(__wasi_random_get(buffer, length));
++int getentropy(void *buffer, size_t length) {
++  return __wasi_syscall_ret(__wasi_random_get(buffer, length));
  }
  
  // Emscripten additions
-@@ -193,29 +336,3 @@ void _wasmfs_get_preloaded_child_path(int index, void* buffer) {}
+@@ -193,29 +326,3 @@ void _wasmfs_get_preloaded_child_path(int index, void* buffer) {}
  
  void _wasmfs_get_preloaded_path_name(int index, void* buffer) {}
  
