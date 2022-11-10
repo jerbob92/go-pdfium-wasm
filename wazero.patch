@@ -1,0 +1,696 @@
+diff --git a/imports/wasi_snapshot_preview1/example/cat_test.go b/imports/wasi_snapshot_preview1/example/cat_test.go
+index c8e8f1c3..1f4cbfaf 100644
+--- a/imports/wasi_snapshot_preview1/example/cat_test.go
++++ b/imports/wasi_snapshot_preview1/example/cat_test.go
+@@ -18,13 +18,31 @@ import (
+ //
+ //	go run cat.go /test.txt
+ func Test_main(t *testing.T) {
+-	for _, toolchain := range []string{"cargo-wasi", "tinygo", "zig-cc"} {
+-		toolchain := toolchain
+-		t.Run(toolchain, func(t *testing.T) {
+-			t.Setenv("TOOLCHAIN", toolchain)
++	tests := []struct {
++		toolchain      string
++		expectedOutput string
++	}{
++		{
++			toolchain:      "cargo-wasi",
++			expectedOutput: "greet filesystem\n",
++		},
++		{
++			toolchain:      "tinygo",
++			expectedOutput: "Size: 17\nMode: 0\nContent: greet filesystem\n",
++		},
++		{
++			toolchain:      "zig-cc",
++			expectedOutput: "greet filesystem\n",
++		},
++	}
++
++	for _, tc := range tests {
++		tt := tc
++		t.Run(tt.toolchain, func(t *testing.T) {
++			t.Setenv("TOOLCHAIN", tt.toolchain)
+ 			stdout, stderr := maintester.TestMain(t, main, "cat", "/test.txt")
+ 			require.Equal(t, "", stderr)
+-			require.Equal(t, "greet filesystem\n", stdout)
++			require.Equal(t, tt.expectedOutput, stdout)
+ 		})
+ 	}
+ }
+@@ -34,20 +52,24 @@ func Test_main(t *testing.T) {
+ // go run github.com/tetratelabs/wazero/cmd/wazero run -mount=testdata:/ cat.wasm /test.txt
+ func Test_cli(t *testing.T) {
+ 	tests := []struct {
+-		toolchain string
+-		wasm      []byte
++		toolchain      string
++		wasm           []byte
++		expectedOutput string
+ 	}{
+ 		{
+-			toolchain: "cargo-wasi",
+-			wasm:      catWasmCargoWasi,
++			toolchain:      "cargo-wasi",
++			wasm:           catWasmCargoWasi,
++			expectedOutput: "greet filesystem\n",
+ 		},
+ 		{
+-			toolchain: "tinygo",
+-			wasm:      catWasmTinyGo,
++			toolchain:      "tinygo",
++			wasm:           catWasmTinyGo,
++			expectedOutput: "Size: 17\nMode: 0\nContent: greet filesystem\n",
+ 		},
+ 		{
+-			toolchain: "zig-cc",
+-			wasm:      catWasmZigCc,
++			toolchain:      "zig-cc",
++			wasm:           catWasmZigCc,
++			expectedOutput: "greet filesystem\n",
+ 		},
+ 	}
+ 
+@@ -87,7 +109,7 @@ func Test_cli(t *testing.T) {
+ 					cmd.Stdout = stdOut
+ 					cmd.Stderr = stdErr
+ 					require.NoError(t, cmd.Run(), stdErr.String())
+-					require.Equal(t, "greet filesystem\n", stdOut.String())
++					require.Equal(t, tt.expectedOutput, stdOut.String())
+ 				})
+ 			}
+ 		})
+diff --git a/imports/wasi_snapshot_preview1/example/testdata/tinygo/cat.go b/imports/wasi_snapshot_preview1/example/testdata/tinygo/cat.go
+index 47bb7684..94a358f7 100644
+--- a/imports/wasi_snapshot_preview1/example/testdata/tinygo/cat.go
++++ b/imports/wasi_snapshot_preview1/example/testdata/tinygo/cat.go
+@@ -1,6 +1,8 @@
+ package main
+ 
+ import (
++	"fmt"
++	"io"
+ 	"os"
+ )
+ 
+@@ -10,12 +12,27 @@ import (
+ func main() {
+ 	// Start at arg[1] because args[0] is the program name.
+ 	for i := 1; i < len(os.Args); i++ {
+-		bytes, err := os.ReadFile(os.Args[i])
++		file, err := os.Open(os.Args[i])
++		if err != nil {
++			os.Exit(1)
++		}
++
++		defer file.Close()
++
++		stat, err := file.Stat()
++		if err != nil {
++			os.Exit(1)
++		}
++
++		os.Stdout.Write([]byte(fmt.Sprintf("Size: %d\n", stat.Size())))
++		os.Stdout.Write([]byte(fmt.Sprintf("Mode: %d\n", stat.Mode())))
++
++		bytes, err := io.ReadAll(file)
+ 		if err != nil {
+ 			os.Exit(1)
+ 		}
+ 
+ 		// Use write to avoid needing to worry about Windows newlines.
+-		os.Stdout.Write(bytes)
++		os.Stdout.Write([]byte(fmt.Sprintf("Content: %s", string(bytes))))
+ 	}
+ }
+diff --git a/imports/wasi_snapshot_preview1/example/testdata/tinygo/cat.wasm b/imports/wasi_snapshot_preview1/example/testdata/tinygo/cat.wasm
+index 8a6114f8..07097a2c 100755
+Binary files a/imports/wasi_snapshot_preview1/example/testdata/tinygo/cat.wasm and b/imports/wasi_snapshot_preview1/example/testdata/tinygo/cat.wasm differ
+diff --git a/imports/wasi_snapshot_preview1/fs.go b/imports/wasi_snapshot_preview1/fs.go
+index 45e99629..80f8a65a 100644
+--- a/imports/wasi_snapshot_preview1/fs.go
++++ b/imports/wasi_snapshot_preview1/fs.go
+@@ -194,15 +194,134 @@ var fdFdstatSetRights = stubFunction(
+ )
+ 
+ // fdFilestatGet is the WASI function named functionFdFilestatGet which returns
+-// the attributes of an open file.
++// the stat attributes of an open file.
+ //
++// # Parameters
++//
++//   - fd: file descriptor to get the filestat attributes data for
++//   - resultFilestat: offset to write the result filestat data
++//
++// Result (Errno)
++//
++// The return value is ErrnoSuccess except the following error conditions:
++//   - ErrnoBadf: `fd` is invalid
++//   - ErrnoIo: could not stat `fd` on filesystem
++//   - ErrnoFault: `resultFilestat` points to an offset out of memory
++//
++// filestat byte layout is 64-byte size, with the following fields:
++//   - dev 8 bytes: the device ID of device containing the file
++//   - ino 8 bytes: the file serial number
++//   - filetype 1 byte: the type of the file
++//   - 7 pad bytes
++//   - nlink 8 bytes: number of hard links to the file
++//   - size 8 bytes: for regular files, the file size in bytes. For symbolic links, the length in bytes of the pathname contained in the symbolic link
++//   - atim 8 bytes: ast data access timestamp
++//   - mtim 8 bytes: last data modification timestamp
++//   - ctim 8 bytes: ast file status change timestamp
++//
++// For example, with a regular file this function writes the below to api.Memory:
++//
++//	                                                             uint8 --+
++//		                         uint64le                uint64le        |        padding               uint64le                uint64le                         uint64le                               uint64le                             uint64le
++//		                 +--------------------+  +--------------------+  |  +-----------------+  +--------------------+  +-----------------------+  +----------------------------------+  +----------------------------------+  +----------------------------------+
++//		                 |                    |  |                    |  |  |                 |  |                    |  |                       |  |                                  |  |                                  |  |                                  |
++//		          []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 117, 80, 0, 0, 0, 0, 0, 0, 160, 153, 212, 128, 110, 221, 35, 23, 160, 153, 212, 128, 110, 221, 35, 23, 160, 153, 212, 128, 110, 221, 35, 23}
++//		resultFilestat   ^-- dev                 ^-- ino                 ^                       ^-- nlink               ^-- size                   ^-- atim                              ^-- mtim                              ^-- ctim
++//		                                                                 |
++//		                                                                 +-- filetype
++//
++// The following properties of filestat are not implemented:
++//   - dev: not supported by Golang FS
++//   - ino: not supported by Golang FS
++//   - nlink: not supported by Golang FS
++//   - atime: not supported by Golang FS, we use mtim for this
++//   - ctim: not supported by Golang FS, we use mtim for this
++//
++// Note: This is similar to `fstat` in POSIX.
+ // See https://github.com/WebAssembly/WASI/blob/snapshot-01/phases/snapshot/docs.md#-fd_filestat_getfd-fd---errno-filestat
+-var fdFilestatGet = stubFunction(
+-	functionFdFilestatGet,
+-	[]wasm.ValueType{i32, i32},
+-	[]string{"fd", "result.buf"},
++// and https://linux.die.net/man/3/fstat
++var fdFilestatGet = &wasm.HostFunc{
++	ExportNames: []string{functionFdFilestatGet},
++	Name:        functionFdFilestatGet,
++	ParamTypes:  []api.ValueType{i32, i32},
++	ParamNames:  []string{"fd", "result.buf"},
++	ResultTypes: []api.ValueType{i32},
++	Code: &wasm.Code{
++		IsHostFunction: true,
++		GoFunc:         api.GoModuleFunc(fdFilestatGetFn),
++	},
++}
++
++type wasiFiletype uint8
++
++const (
++	wasiFiletypeUnknown wasiFiletype = iota
++	wasiFiletypeBlockDevice
++	wasiFiletypeCharacterDevice
++	wasiFiletypeDirectory
++	wasiFiletypeRegularFile
++	wasiFiletypeSocketDgram
++	wasiFiletypeSocketStream
++	wasiFiletypeSymbolicLink
+ )
+ 
++func fdFilestatGetFn(ctx context.Context, mod api.Module, params []uint64) []uint64 {
++	fd := uint32(params[0])
++	buf := uint32(params[1])
++
++	sysCtx := mod.(*wasm.CallContext).Sys
++	file, ok := sysCtx.FS(ctx).OpenedFile(ctx, fd)
++	if !ok {
++		return errnoBadf
++	}
++
++	fileStat, err := file.File.Stat()
++	if err != nil {
++		return errnoIo
++	}
++
++	fileMode := fileStat.Mode()
++
++	wasiFileMode := wasiFiletypeUnknown
++	if fileMode&fs.ModeDevice != 0 {
++		wasiFileMode = wasiFiletypeBlockDevice
++	} else if fileMode&fs.ModeCharDevice != 0 {
++		wasiFileMode = wasiFiletypeCharacterDevice
++	} else if fileMode&fs.ModeDir != 0 {
++		wasiFileMode = wasiFiletypeDirectory
++	} else if fileMode&fs.ModeType == 0 {
++		wasiFileMode = wasiFiletypeRegularFile
++	} else if fileMode&fs.ModeSymlink != 0 {
++		wasiFileMode = wasiFiletypeSymbolicLink
++	}
++
++	// We don't write dev and ino since we don't support them.
++
++	if !mod.Memory().WriteByte(ctx, buf+16, uint8(wasiFileMode)) {
++		return errnoFault
++	}
++
++	// We don't write nlink since we don't support it.
++
++	if !mod.Memory().WriteUint64Le(ctx, buf+32, uint64(fileStat.Size())) {
++		return errnoFault
++	}
++
++	if !mod.Memory().WriteUint64Le(ctx, buf+40, uint64(fileStat.ModTime().UnixNano())) {
++		return errnoFault
++	}
++
++	if !mod.Memory().WriteUint64Le(ctx, buf+48, uint64(fileStat.ModTime().UnixNano())) {
++		return errnoFault
++	}
++
++	if !mod.Memory().WriteUint64Le(ctx, buf+56, uint64(fileStat.ModTime().UnixNano())) {
++		return errnoFault
++	}
++
++	return errnoSuccess
++}
++
+ // fdFilestatSetSize is the WASI function named functionFdFilestatSetSize which
+ // adjusts the size of an open file.
+ //
+@@ -497,11 +616,108 @@ func fdRead_shouldContinueRead(n, l uint32, err error) (bool, []uint64) {
+ // entries from a directory.
+ //
+ // See https://github.com/WebAssembly/WASI/blob/snapshot-01/phases/snapshot/docs.md#-fd_readdirfd-fd-buf-pointeru8-buf_len-size-cookie-dircookie---errno-size
+-var fdReaddir = stubFunction(
+-	functionFdReaddir,
+-	[]wasm.ValueType{i32, i32, i32, i64, i32},
+-	[]string{"fd", "buf", "buf_len", "cookie", "result.bufused"},
+-)
++var fdReaddir = &wasm.HostFunc{
++	ExportNames: []string{functionFdReaddir},
++	Name:        functionFdReaddir,
++	ParamTypes:  []wasm.ValueType{i32, i32, i32, i64, i32},
++	ParamNames:  []string{"fd", "buf", "buf_len", "cookie", "result.bufused"},
++	ResultTypes: []api.ValueType{i32},
++	Code: &wasm.Code{
++		IsHostFunction: true,
++		GoFunc:         api.GoModuleFunc(fdReaddirFn),
++	},
++}
++
++func fdReaddirFn(ctx context.Context, mod api.Module, params []uint64) []uint64 {
++	fd := uint32(params[0])
++	buf := uint32(params[1])
++	bufLen := uint32(params[2])
++	cookie := params[3]
++	resultBufused := uint32(params[4])
++
++	fsc := mod.(*wasm.CallContext).Sys.FS(ctx)
++	var entries []fs.DirEntry
++	if f, ok := fsc.OpenedFile(ctx, fd); !ok {
++		return errnoBadf
++	} else if d, ok := f.File.(fs.ReadDirFile); !ok {
++		return errnoNotdir
++	} else if l, err := d.ReadDir(int(bufLen / 24)); err != nil && !errors.Is(err, io.EOF) {
++		return errnoIo
++	} else {
++		f.DirEntries = append(f.DirEntries, l...)
++
++		// Assume cookie is the directory index position and skip until
++		// there as opposed to maintaining cross syscall state.
++		pos := uint32(cookie)
++		dirLen := uint32(len(f.DirEntries))
++		if pos >= dirLen {
++			// Write 0 to resultBufused and return success so the caller knows
++			// we're at the end of the list.
++			if !mod.Memory().WriteUint32Le(ctx, resultBufused, 0) {
++				return errnoFault
++			}
++			return errnoSuccess
++		}
++		entries = f.DirEntries[pos:]
++	}
++
++	// Max entries are bounded by byte count, not entry length.
++	var bufused uint32
++	for i, e := range entries {
++		nameLen := uint32(len(e.Name()))
++
++		// Check if we go out of bounds of we would write the struct.
++		if bufused + 24 > bufLen {
++			bufused = bufLen
++			break
++		}
++
++		// Now, write the layout of dirent.
++		if !mod.Memory().WriteUint64Le(ctx, buf, uint64(i)+cookie+1) { // d_next
++			return errnoFault
++		}
++		buf += 8
++		if !mod.Memory().WriteUint64Le(ctx, buf, 0) { // fake d_ino
++			return errnoFault
++		}
++		buf += 8
++		if !mod.Memory().WriteUint32Le(ctx, buf, nameLen) { // d_namlen
++			return errnoFault
++		}
++		buf += 4
++		filetype := wasiFiletypeRegularFile
++		if e.IsDir() {
++			filetype = wasiFiletypeDirectory
++		}
++		if !mod.Memory().WriteByte(ctx, buf, uint8(filetype)) {
++			return errnoFault
++		}
++		buf += 4
++		bufused += 24
++
++		// Check if we go out of bounds when
++		if bufused + nameLen > bufLen {
++			bufused = bufLen
++
++			// Stop, noting this could stop at the first entry.
++			// Caller is supposed to grow the buffer.
++			break
++		}
++
++		// Write the name bytes directly after the entry.
++		if !mod.Memory().Write(ctx, buf, []byte(e.Name())) {
++			return errnoFault
++		}
++		buf += nameLen
++		bufused += nameLen
++	}
++
++	if !mod.Memory().WriteUint32Le(ctx, resultBufused, bufused) {
++		return errnoFault
++	}
++
++	return errnoSuccess
++}
+ 
+ // fdRenumber is the WASI function named functionFdRenumber which atomically
+ // replaces a file descriptor by renumbering another file descriptor.
+@@ -741,14 +957,158 @@ var pathCreateDirectory = stubFunction(
+ )
+ 
+ // pathFilestatGet is the WASI function named functionPathFilestatGet which
+-// returns the attributes of a file or directory.
++// returns the stat attributes of a file or directory.
++//
++// # Parameters
+ //
++//   - fd: file descriptor of the folder to look in for the path
++//   - flags: flags determining the method of how paths are resolved
++//   - path: path under fd to get the filestat attributes data for
++//   - path_len: length of the path that was given
++//   - resultFilestat: offset to write the result filestat data
++//
++// Result (Errno)
++//
++// The return value is ErrnoSuccess except the following error conditions:
++//   - ErrnoBadf: `fd` is invalid
++//   - ErrnoIo: could not stat `fd` on filesystem
++//   - ErrnoFault: `resultFilestat` points to an offset out of memory
++//   - ErrnoNoent: could not find the path
++//
++// filestat byte layout is 64-byte size, with the following fields:
++//   - dev 8 bytes: the device ID of device containing the file
++//   - ino 8 bytes: the file serial number
++//   - filetype 1 byte: the type of the file
++//   - 7 pad bytes
++//   - nlink 8 bytes: number of hard links to the file
++//   - size 8 bytes: for regular files, the file size in bytes. For symbolic links, the length in bytes of the pathname contained in the symbolic link
++//   - atim 8 bytes: ast data access timestamp
++//   - mtim 8 bytes: last data modification timestamp
++//   - ctim 8 bytes: ast file status change timestamp
++//
++// For example, with a regular file this function writes the below to api.Memory:
++//
++//	                                                             uint8 --+
++//		                         uint64le                uint64le        |        padding               uint64le                uint64le                         uint64le                               uint64le                             uint64le
++//		                 +--------------------+  +--------------------+  |  +-----------------+  +--------------------+  +-----------------------+  +----------------------------------+  +----------------------------------+  +----------------------------------+
++//		                 |                    |  |                    |  |  |                 |  |                    |  |                       |  |                                  |  |                                  |  |                                  |
++//		          []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 117, 80, 0, 0, 0, 0, 0, 0, 160, 153, 212, 128, 110, 221, 35, 23, 160, 153, 212, 128, 110, 221, 35, 23, 160, 153, 212, 128, 110, 221, 35, 23}
++//		resultFilestat   ^-- dev                 ^-- ino                 ^                       ^-- nlink               ^-- size                   ^-- atim                              ^-- mtim                              ^-- ctim
++//		                                                                 |
++//		                                                                 +-- filetype
++//
++// The following properties of filestat are not implemented:
++//   - dev: not supported by Golang FS
++//   - ino: not supported by Golang FS
++//   - nlink: not supported by Golang FS
++//   - atime: not supported by Golang FS, we use mtim for this
++//   - ctim: not supported by Golang FS, we use mtim for this
++//
++// Note: This is similar to `fstatat` in POSIX.
+ // See https://github.com/WebAssembly/WASI/blob/snapshot-01/phases/snapshot/docs.md#-path_filestat_getfd-fd-flags-lookupflags-path-string---errno-filestat
+-var pathFilestatGet = stubFunction(
+-	functionPathFilestatGet,
+-	[]wasm.ValueType{i32, i32, i32, i32, i32},
+-	[]string{"fd", "flags", "path", "path_len", "result.buf"},
+-)
++// and https://linux.die.net/man/2/fstatat
++var pathFilestatGet = &wasm.HostFunc{
++	ExportNames: []string{functionPathFilestatGet},
++	Name:        functionPathFilestatGet,
++	ParamTypes:  []api.ValueType{i32, i32, i32, i32, i32},
++	ParamNames:  []string{"fd", "flags", "path", "path_len", "result.buf"},
++	ResultTypes: []api.ValueType{i32},
++	Code: &wasm.Code{
++		IsHostFunction: true,
++		GoFunc:         api.GoModuleFunc(pathFilestatGetFn),
++	},
++}
++
++func pathFilestatGetFn(ctx context.Context, mod api.Module, params []uint64) []uint64 {
++	sysCtx := mod.(*wasm.CallContext).Sys
++	fsc := sysCtx.FS(ctx)
++
++	fd := uint32(params[0])
++
++	// @todo: implement flags?
++	//flags := uint32(params[1])
++
++	path := uint32(params[2])
++	pathLen := uint32(params[3])
++	result := uint32(params[4])
++
++	_, ok := fsc.OpenedFile(ctx, fd)
++	if !ok {
++		return errnoBadf
++	}
++
++	b, ok := mod.Memory().Read(ctx, path, pathLen)
++	if !ok {
++		return errnoFault
++	}
++
++	// Sadly we need to open the directory to stat it.
++	newFD, err := fsc.OpenFile(ctx, string(b))
++	if err != nil {
++		switch {
++		case errors.Is(err, fs.ErrNotExist):
++			return errnoNoent
++		case errors.Is(err, fs.ErrExist):
++			return errnoExist
++		default:
++			return errnoIo
++		}
++	}
++
++	// Close it again when function returns.
++	defer fsc.CloseFile(ctx, newFD)
++
++	newFile, ok := fsc.OpenedFile(ctx, newFD)
++	if !ok {
++		return errnoBadf
++	}
++
++	fileStat, err := newFile.File.Stat()
++	if err != nil {
++		return errnoIo
++	}
++
++	fileMode := fileStat.Mode()
++
++	wasiFileMode := wasiFiletypeUnknown
++	if fileMode&fs.ModeDevice != 0 {
++		wasiFileMode = wasiFiletypeBlockDevice
++	} else if fileMode&fs.ModeCharDevice != 0 {
++		wasiFileMode = wasiFiletypeCharacterDevice
++	} else if fileMode&fs.ModeDir != 0 {
++		wasiFileMode = wasiFiletypeDirectory
++	} else if fileMode&fs.ModeType == 0 {
++		wasiFileMode = wasiFiletypeRegularFile
++	} else if fileMode&fs.ModeSymlink != 0 {
++		wasiFileMode = wasiFiletypeSymbolicLink
++	}
++
++	// We don't write dev and ino since we don't support them.
++
++	if !mod.Memory().WriteByte(ctx, result+16, uint8(wasiFileMode)) {
++		return errnoFault
++	}
++
++	// We don't write nlink since we don't support it.
++
++	if !mod.Memory().WriteUint64Le(ctx, result+32, uint64(fileStat.Size())) {
++		return errnoFault
++	}
++
++	if !mod.Memory().WriteUint64Le(ctx, result+40, uint64(fileStat.ModTime().UnixNano())) {
++		return errnoFault
++	}
++
++	if !mod.Memory().WriteUint64Le(ctx, result+48, uint64(fileStat.ModTime().UnixNano())) {
++		return errnoFault
++	}
++
++	if !mod.Memory().WriteUint64Le(ctx, result+56, uint64(fileStat.ModTime().UnixNano())) {
++		return errnoFault
++	}
++
++	return errnoSuccess
++}
+ 
+ // pathFilestatSetTimes is the WASI function named functionPathFilestatSetTimes
+ // which adjusts the timestamps of a file or directory.
+diff --git a/imports/wasi_snapshot_preview1/fs_test.go b/imports/wasi_snapshot_preview1/fs_test.go
+index ffdcbdc3..c50b7df0 100644
+--- a/imports/wasi_snapshot_preview1/fs_test.go
++++ b/imports/wasi_snapshot_preview1/fs_test.go
+@@ -9,6 +9,7 @@ import (
+ 	"path"
+ 	"testing"
+ 	"testing/fstest"
++	"time"
+ 
+ 	"github.com/tetratelabs/wazero"
+ 	"github.com/tetratelabs/wazero/api"
+@@ -200,15 +201,111 @@ func Test_fdFdstatSetRights(t *testing.T) {
+ `, log)
+ }
+ 
+-// Test_fdFilestatGet only tests it is stubbed for GrainLang per #271
+ func Test_fdFilestatGet(t *testing.T) {
+-	log := requireErrnoNosys(t, functionFdFilestatGet, 0, 0)
+-	require.Equal(t, `
+---> proxy.fd_filestat_get(fd=0,result.buf=0)
+-	--> wasi_snapshot_preview1.fd_filestat_get(fd=0,result.buf=0)
+-	<-- ENOSYS
+-<-- (52)
+-`, log)
++	file, dir := "a", "b"
++	testFS := fstest.MapFS{file: {Data: make([]byte, 123456), ModTime: time.Unix(1667482413, 0)}, dir: {Mode: fs.ModeDir, ModTime: time.Unix(1667482413, 0)}}
++
++	mod, r, log := requireProxyModule(t, wazero.NewModuleConfig().WithFS(testFS))
++	defer r.Close(testCtx)
++	memorySize := mod.Memory().Size(testCtx)
++
++	// open both paths without using WASI
++	fsc := mod.(*wasm.CallContext).Sys.FS(testCtx)
++
++	fileFd, err := fsc.OpenFile(testCtx, file)
++	require.NoError(t, err)
++
++	dirFd, err := fsc.OpenFile(testCtx, dir)
++	require.NoError(t, err)
++
++	tests := []struct {
++		name               string
++		fd, resultFilestat uint32
++		expectedMemory     []byte
++		expectedErrno      Errno
++		expectedLog        string
++	}{
++		{
++			name: "file",
++			fd:   fileFd,
++			expectedMemory: []byte{
++				'?', '?', '?', '?', '?', '?', '?', '?', // dev
++				'?', '?', '?', '?', '?', '?', '?', '?', // ino
++				4, '?', '?', '?', '?', '?', '?', '?', // filetype + padding
++				'?', '?', '?', '?', '?', '?', '?', '?', // nlink
++				0x40, 0xe2, 0x1, 0, 0, 0, 0, 0, // size
++				0x0, 0x82, 0x13, 0x80, 0x6b, 0x16, 0x24, 0x17, // atim
++				0x0, 0x82, 0x13, 0x80, 0x6b, 0x16, 0x24, 0x17, // mtim
++				0x0, 0x82, 0x13, 0x80, 0x6b, 0x16, 0x24, 0x17, // ctim
++			},
++			expectedLog: `
++--> proxy.fd_filestat_get(fd=4,result.buf=0)
++	==> wasi_snapshot_preview1.fd_filestat_get(fd=4,result.buf=0)
++	<== ESUCCESS
++<-- (0)
++`,
++		},
++		{
++			name: "dir",
++			fd:   dirFd,
++			expectedMemory: []byte{
++				'?', '?', '?', '?', '?', '?', '?', '?', // dev
++				'?', '?', '?', '?', '?', '?', '?', '?', // ino
++				3, '?', '?', '?', '?', '?', '?', '?', // filetype + padding
++				'?', '?', '?', '?', '?', '?', '?', '?', // nlink
++				0, 0, 0, 0, 0, 0, 0, 0, // size
++				0x0, 0x82, 0x13, 0x80, 0x6b, 0x16, 0x24, 0x17, // atim
++				0x0, 0x82, 0x13, 0x80, 0x6b, 0x16, 0x24, 0x17, // mtim
++				0x0, 0x82, 0x13, 0x80, 0x6b, 0x16, 0x24, 0x17, // ctim
++			},
++			expectedLog: `
++--> proxy.fd_filestat_get(fd=5,result.buf=0)
++	==> wasi_snapshot_preview1.fd_filestat_get(fd=5,result.buf=0)
++	<== ESUCCESS
++<-- (0)
++`,
++		},
++		{
++			name:          "bad FD",
++			fd:            math.MaxUint32,
++			expectedErrno: ErrnoBadf,
++			expectedLog: `
++--> proxy.fd_filestat_get(fd=4294967295,result.buf=0)
++	==> wasi_snapshot_preview1.fd_filestat_get(fd=4294967295,result.buf=0)
++	<== EBADF
++<-- (8)
++`,
++		},
++		{
++			name:           "resultFilestat exceeds the maximum valid address by 1",
++			fd:             dirFd,
++			resultFilestat: memorySize - 64 + 1,
++			expectedErrno:  ErrnoFault,
++			expectedLog: `
++--> proxy.fd_filestat_get(fd=5,result.buf=65473)
++	==> wasi_snapshot_preview1.fd_filestat_get(fd=5,result.buf=65473)
++	<== EFAULT
++<-- (21)
++`,
++		},
++	}
++
++	for _, tt := range tests {
++		tc := tt
++
++		t.Run(tc.name, func(t *testing.T) {
++			defer log.Reset()
++
++			maskMemory(t, testCtx, mod, len(tc.expectedMemory))
++
++			requireErrno(t, tc.expectedErrno, mod, functionFdFilestatGet, uint64(tc.fd), uint64(tc.resultFilestat))
++			require.Equal(t, tc.expectedLog, "\n"+log.String())
++
++			actual, ok := mod.Memory().Read(testCtx, 0, uint32(len(tc.expectedMemory)))
++			require.True(t, ok)
++			require.Equal(t, tc.expectedMemory, actual)
++		})
++	}
+ }
+ 
+ // Test_fdFilestatSetSize only tests it is stubbed for GrainLang per #271
+diff --git a/imports/wasi_snapshot_preview1/wasi.go b/imports/wasi_snapshot_preview1/wasi.go
+index e36ff8c5..4a25a558 100644
+--- a/imports/wasi_snapshot_preview1/wasi.go
++++ b/imports/wasi_snapshot_preview1/wasi.go
+@@ -184,6 +184,7 @@ var (
+ 	errnoFault       = []uint64{uint64(ErrnoFault)}
+ 	errnoNametoolong = []uint64{uint64(ErrnoNametoolong)}
+ 	errnoSuccess     = []uint64{uint64(ErrnoSuccess)}
++	errnoNotdir      = []uint64{uint64(ErrnoNotdir)}
+ )
+ 
+ func writeOffsetsAndNullTerminatedValues(ctx context.Context, mem api.Memory, values []string, offsets, bytes uint32) []uint64 {
