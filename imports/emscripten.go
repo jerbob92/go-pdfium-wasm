@@ -51,7 +51,7 @@ func invoke_iii(_ int32, _ int32, _ int32) int32 {
 }
 
 func invoke_iiii(_ int32, _ int32, _ int32, _ int32) int32 {
-	log.Fatal("Called into invoke_iiii")
+	//log.Fatal("Called into invoke_iiii")
 	return 0
 }
 

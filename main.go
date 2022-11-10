@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	_ "embed"
 	"image"
+	"image/jpeg"
 	"log"
 	"os"
 
@@ -134,9 +135,19 @@ func main() {
 		log.Println(errorCode)
 	*/
 
-	img := image.NewRGBA(image.Rect(0, 0, 2000, 2000))
+	rect := image.Rect(0, 0, 2000, 2000)
 
-	results, err = malloc.Call(ctx, uint64(len(img.Pix)))
+	// We do not allocate the memory yet since we take it directly from memory in WASM.
+	img := &image.RGBA{
+		Pix:    nil,
+		Stride: 4 * rect.Dx(),
+		Rect:   rect,
+	}
+
+	// RGBA = 4 bytes per pixel
+	bufSize := 4 * rect.Dx() * rect.Dy()
+
+	results, err = malloc.Call(ctx, uint64(bufSize))
 	if err != nil {
 		log.Panicln(err)
 	}
@@ -175,4 +186,20 @@ func main() {
 
 	log.Println("render")
 	log.Println(render)
+
+	b, _ := mod.Memory().Read(ctx, uint32(results[0]), uint32(bufSize))
+	if err != nil {
+		log.Panicln(err)
+	}
+
+	img.Pix = b
+
+	f, err := os.Create("img.jpg")
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+	if err = jpeg.Encode(f, img, nil); err != nil {
+		log.Printf("failed to encode: %v", err)
+	}
 }

@@ -23,19 +23,29 @@ index f3bb425f6..117a8da46 100644
   * Open flags used by `path_open`.
   */
 diff --git a/system/lib/standalone/standalone.c b/system/lib/standalone/standalone.c
-index 7b11a8131..5657b000d 100644
+index 7b11a8131..8faff8a25 100644
 --- a/system/lib/standalone/standalone.c
 +++ b/system/lib/standalone/standalone.c
-@@ -14,6 +14,8 @@
+@@ -5,6 +5,7 @@
+  * found in the LICENSE file.
+  */
+ 
++#include <dirent.h>
+ #include <assert.h>
+ #include <errno.h>
+ #include <stdlib.h>
+@@ -14,6 +15,10 @@
  #include <syscall_arch.h>
  #include <time.h>
  #include <unistd.h>
 +#include <fcntl.h>
 +#include <sys/stat.h>
++#include <fcntl.h>
++#include <stdio.h>
  
  #include <emscripten.h>
  #include <emscripten/heap.h>
-@@ -81,22 +83,109 @@ __attribute__((__weak__)) int _munmap_js(
+@@ -81,22 +86,110 @@ __attribute__((__weak__)) int _munmap_js(
    return -ENOSYS;
  }
  
@@ -87,6 +97,7 @@ index 7b11a8131..5657b000d 100644
    }
 -  return -EPERM;
 +
++  // @todo: implement AT_FDCWD properly.
 +  if (pathname[0] == '/') {
 +    dirfd = __WASI_FD_ROOT;
 +  }
@@ -149,7 +160,7 @@ index 7b11a8131..5657b000d 100644
  }
  
  __attribute__((__weak__)) int __syscall_ioctl(int fd, int op, ...) {
-@@ -107,15 +196,59 @@ __attribute__((__weak__)) int __syscall_fcntl64(int fd, int cmd, ...) {
+@@ -107,15 +200,243 @@ __attribute__((__weak__)) int __syscall_fcntl64(int fd, int cmd, ...) {
    return -ENOSYS;
  }
  
@@ -191,7 +202,6 @@ index 7b11a8131..5657b000d 100644
 +
  __attribute__((__weak__)) int __syscall_fstat64(int fd, intptr_t buf) {
 -  return -ENOSYS;
-+  // Perform system call.
 +  __wasi_filestat_t internal_stat;
 +  __wasi_errno_t error =
 +    __wasi_fd_filestat_get(fd, &internal_stat);
@@ -200,6 +210,191 @@ index 7b11a8131..5657b000d 100644
 +  }
 +  to_public_stat(&internal_stat, (struct stat *) buf);
 +  return 0;
++}
++
++__attribute__((__weak__)) int __syscall_getdents64(int fd, intptr_t dirp, size_t count) {
++  intptr_t dirpointer = dirp;
++  struct dirent *de;
++  de = (void *)(dirpointer);
++
++  // Check if the result buffer is too small.
++  if (count / sizeof(struct dirent) == 0) {
++    return -EINVAL;
++  }
++
++  __wasi_dirent_t entry;
++
++  // Create new buffer size to save same amount of __wasi_dirent_t as dirp records.
++  size_t buffer_size = (count / sizeof(struct dirent)) * sizeof(entry);
++  char *buffer = malloc(buffer_size);
++  if (buffer == NULL) {
++    return -1;
++  }
++
++  size_t buffer_processed = buffer_size;
++  size_t buffer_used = buffer_size;
++  size_t dirent_processed = 0;
++
++  // Use the cookie of the previous entries, readdir reuses the buffer so
++  // a nonzero de->d_off is the cookie of the last readdir call.
++  int i;
++  struct dirent *checkde;
++  __wasi_dircookie_t cookie = 0;
++  for (i = 0; i < (count / sizeof(struct dirent)); ++i) {
++    checkde = (void *)(dirpointer + (sizeof(struct dirent) * i));
++
++    // Store cookie if it's bigger than the last known.
++    if (checkde->d_off > cookie) {
++      cookie = checkde->d_off;
++    }
++
++    // Reset cookie to 0 so that this offset isn't going to hunt us in later calls.
++    checkde->d_off = 0;
++  }
++
++  for (;;) {
++    // Extract the next dirent header.
++    size_t buffer_left = buffer_used - buffer_processed;
++    if (buffer_left < sizeof(__wasi_dirent_t)) {
++      // End-of-file.
++      if (buffer_used < buffer_size) {
++        break;
++      }
++
++      goto read_entries;
++    }
++    __wasi_dirent_t entry;
++    memcpy(&entry, buffer + buffer_processed, sizeof(entry));
++
++    size_t entry_size = sizeof(__wasi_dirent_t) + entry.d_namlen;
++    if (entry.d_namlen == 0) {
++      // Invalid pathname length. Skip the entry.
++      buffer_processed += entry_size;
++      continue;
++    }
++
++    // The entire entry must be present in buffer space. If not, read
++    // the entry another time. Ensure that the read buffer is large
++    // enough to fit at least this single entry.
++    if (buffer_left < entry_size) {
++      while (buffer_size < entry_size) {
++        buffer_size *= 2;
++      }
++      char *new_buffer = realloc(buffer, buffer_size);
++      if (new_buffer == NULL) {
++        return -1;
++      }
++      buffer = new_buffer;
++      goto read_entries;
++    }
++
++    // Skip entries having null bytes in the filename.
++    const char *name = buffer + buffer_processed + sizeof(entry);
++    buffer_processed += entry_size;
++    if (memchr(name, '\0', entry.d_namlen) != NULL) {
++      continue;
++    }
++
++    de->d_ino = entry.d_ino;
++
++    // Map the right WASI type to dirent type.
++    // I could not get the dirent.h import to work to use defines.
++    switch (entry.d_type) {
++      case __WASI_FILETYPE_UNKNOWN:
++        de->d_type = 0;
++        break;
++      case __WASI_FILETYPE_BLOCK_DEVICE:
++        de->d_type = 6;
++        break;
++      case __WASI_FILETYPE_CHARACTER_DEVICE:
++        de->d_type = 2;
++        break;
++      case __WASI_FILETYPE_DIRECTORY:
++        de->d_type = 4;
++        break;
++      case __WASI_FILETYPE_REGULAR_FILE:
++        de->d_type = 8;
++        break;
++      case __WASI_FILETYPE_SOCKET_DGRAM:
++        de->d_type = 12;
++        break;
++      case __WASI_FILETYPE_SOCKET_STREAM:
++        de->d_type = 12;
++        break;
++      case __WASI_FILETYPE_SYMBOLIC_LINK:
++        de->d_type = 10;
++        break;
++      default:
++        de->d_type = 0;
++        break;
++    }
++
++    de->d_off = entry.d_next;
++    de->d_reclen = sizeof(struct dirent);
++    memcpy(de->d_name, name, entry.d_namlen);
++    de->d_name[entry.d_namlen] = '\0';
++    cookie = entry.d_next;
++    dirent_processed = dirent_processed + sizeof(struct dirent);
++
++    // Can't fit more in my buffer.
++    if (dirent_processed + sizeof(struct dirent) > count) {
++      break;
++    }
++
++    // Set entry to next entry in memory.
++    dirpointer = dirpointer + sizeof(struct dirent);
++    de = (void *)(dirpointer);
++
++    continue;
++
++    read_entries:;
++      // Load more directory entries and continue.
++      // TODO: Remove the cast on `buffer` once the witx is updated with char8 support.
++      __wasi_errno_t error = __wasi_fd_readdir(fd, (uint8_t *)buffer, buffer_size,
++                                               cookie, &buffer_used);
++      if (error != 0) {
++        errno = error;
++        return -1;
++      }
++      buffer_processed = 0;
++  }
++
++  return dirent_processed;
++}
++
++int __syscall_newfstatat(int dirfd, intptr_t path, intptr_t buf, int flags) {
++  // Convert flags to WASI.
++  __wasi_lookupflags_t lookup_flags = 0;
++  if ((flags & AT_SYMLINK_NOFOLLOW) == 0) {
++    lookup_flags |= __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW;
++  }
++
++  const char* pathname = (const char*)path;
++
++  // @todo: implement AT_FDCWD properly.
++  if (pathname[0] == '/') {
++    dirfd = __WASI_FD_ROOT;
++  }
++
++  __wasi_filestat_t fsb_cur;
++  __wasi_errno_t error = __wasi_path_filestat_get(dirfd, lookup_flags, pathname, strlen(pathname), &fsb_cur);
++  if (error != __WASI_ERRNO_SUCCESS) {
++    return __wasi_syscall_ret(error);
++  }
++
++  to_public_stat(&fsb_cur, (struct stat *) buf);
++
++  return 0;
++}
++
++__attribute__((__weak__))
++int __syscall_stat64(intptr_t path, intptr_t buf) {
++  return __syscall_newfstatat(AT_FDCWD, path, buf, 0);
++}
++
++__attribute__((__weak__))
++int __syscall_lstat64(intptr_t path, intptr_t buf) {
++  return __syscall_newfstatat(AT_FDCWD, path, buf, AT_SYMLINK_NOFOLLOW);
  }
  
  // There is no good source of entropy without an import. Make this weak so that
@@ -212,7 +407,7 @@ index 7b11a8131..5657b000d 100644
  }
  
  // Emscripten additions
-@@ -193,29 +326,3 @@ void _wasmfs_get_preloaded_child_path(int index, void* buffer) {}
+@@ -193,29 +514,3 @@ void _wasmfs_get_preloaded_child_path(int index, void* buffer) {}
  
  void _wasmfs_get_preloaded_path_name(int index, void* buffer) {}
  
