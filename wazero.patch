@@ -124,9 +124,6 @@ index 47bb7684..94a358f7 100644
 +		os.Stdout.Write([]byte(fmt.Sprintf("Content: %s", string(bytes))))
  	}
  }
-diff --git a/imports/wasi_snapshot_preview1/example/testdata/tinygo/cat.wasm b/imports/wasi_snapshot_preview1/example/testdata/tinygo/cat.wasm
-index 8a6114f8..07097a2c 100755
-Binary files a/imports/wasi_snapshot_preview1/example/testdata/tinygo/cat.wasm and b/imports/wasi_snapshot_preview1/example/testdata/tinygo/cat.wasm differ
 diff --git a/imports/wasi_snapshot_preview1/fs.go b/imports/wasi_snapshot_preview1/fs.go
 index 45e99629..80f8a65a 100644
 --- a/imports/wasi_snapshot_preview1/fs.go
