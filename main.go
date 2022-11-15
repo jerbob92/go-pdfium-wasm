@@ -5,9 +5,10 @@ import (
 	"crypto/rand"
 	_ "embed"
 	"image"
-	"image/jpeg"
+	"io/ioutil"
 	"log"
 	"os"
+	"time"
 
 	"jerbob92/go-pdfium-wasm/imports"
 
@@ -30,7 +31,7 @@ func main() {
 
 	ctx = context.Background()
 	// Create a new WebAssembly Runtime.
-	r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter())
+	r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
 	defer r.Close(ctx) // This closes everything this Runtime created.
 
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, r); err != nil {
@@ -52,15 +53,13 @@ func main() {
 		log.Panicln(err)
 	}
 
-	openRet, err := mod.ExportedFunction("FPDF_InitLibrary").Call(ctx)
+	malloc := mod.ExportedFunction("malloc")
+	free := mod.ExportedFunction("free")
+
+	_, err = mod.ExportedFunction("FPDF_InitLibrary").Call(ctx)
 	if err != nil {
 		log.Panicln(err)
 	}
-
-	log.Println(openRet)
-
-	malloc := mod.ExportedFunction("malloc")
-	free := mod.ExportedFunction("free")
 
 	path, err := os.Getwd()
 	if err != nil {
@@ -68,138 +67,148 @@ func main() {
 	}
 
 	filePath := path + "/pdf-test.pdf"
-	filePathSize := uint64(len(filePath)) + 1
 
-	results, err := malloc.Call(ctx, filePathSize)
-	if err != nil {
-		log.Panicln(err)
-	}
-	filePathPtr := results[0]
-	defer free.Call(ctx, filePathPtr, filePathSize)
+	for i := 1; i < 10; i++ {
+		start := time.Now()
 
-	// The pointer is a linear memory offset, which is where we write the name.
-	if !mod.Memory().Write(ctx, uint32(filePathPtr), []byte(filePath)) {
-		log.Panicf("Memory.Write(%d, %d) out of range of memory size %d",
-			filePathPtr, filePathSize, mod.Memory().Size(ctx))
-	}
+		func() {
+			doc := []uint64{}
+			fromFile := false
 
-	doc, err := mod.ExportedFunction("FPDF_LoadDocument").Call(ctx, filePathPtr, 0)
-	if err != nil {
-		log.Panicln(err)
-	}
+			if fromFile {
+				filePathSize := uint64(len(filePath)) + 1
 
-	log.Println("Got doc")
-	log.Println(doc)
+				results, err := malloc.Call(ctx, filePathSize)
+				if err != nil {
+					log.Panicln(err)
+				}
+				filePathPtr := results[0]
+				defer free.Call(ctx, filePathPtr, filePathSize)
 
-	errorCode, err := mod.ExportedFunction("FPDF_GetLastError").Call(ctx)
-	if err != nil {
-		log.Panicln(err)
-	}
+				// The pointer is a linear memory offset, which is where we write the name.
+				if !mod.Memory().Write(ctx, uint32(filePathPtr), []byte(filePath)) {
+					log.Panicf("Memory.Write(%d, %d) out of range of memory size %d",
+						filePathPtr, filePathSize, mod.Memory().Size(ctx))
+				}
 
-	log.Println("Errorcode")
-	log.Println(errorCode)
+				doc, err = mod.ExportedFunction("FPDF_LoadDocument").Call(ctx, filePathPtr, 0)
+				if err != nil {
+					log.Panicln(err)
+				}
+			} else {
+				fileData, err := ioutil.ReadFile(filePath)
+				if err != nil {
+					log.Panicln(err)
+				}
 
-	/*
-		fileData, err := ioutil.ReadFile(filePath)
-		if err != nil {
-			log.Panicln(err)
-		}
+				results, err := malloc.Call(ctx, uint64(len(fileData)))
+				if err != nil {
+					log.Panicln(err)
+				}
+				dataPtr := results[0]
+				defer free.Call(ctx, dataPtr, uint64(len(fileData)))
 
-		results, err := malloc.Call(ctx, uint64(len(fileData)))
-		if err != nil {
-			log.Panicln(err)
-		}
-		filePathPtr := results[0]
-		defer free.Call(ctx, filePathPtr, uint64(len(fileData)))
+				// The pointer is a linear memory offset, which is where we write the name.
+				if !mod.Memory().Write(ctx, uint32(dataPtr), fileData) {
+					log.Panicf("Memory.Write(%d, %d) out of range of memory size %d",
+						dataPtr, uint64(len(fileData)), mod.Memory().Size(ctx))
+				}
 
-		// The pointer is a linear memory offset, which is where we write the name.
-		if !mod.Memory().Write(ctx, uint32(filePathPtr), fileData) {
-			log.Panicf("Memory.Write(%d, %d) out of range of memory size %d",
-				filePathPtr, uint64(len(fileData)), mod.Memory().Size(ctx))
-		}
+				doc, err = mod.ExportedFunction("FPDF_LoadMemDocument").Call(ctx, dataPtr, uint64(len(fileData)), 0)
+				if err != nil {
+					log.Panicln(err)
+				}
+			}
 
-		doc, err := mod.ExportedFunction("FPDF_LoadMemDocument").Call(ctx, filePathPtr, uint64(len(fileData)), 0)
-		if err != nil {
-			log.Panicln(err)
-		}
+			if doc[0] == 0 {
+				log.Fatal("Could not load document")
+			}
 
-		log.Println("Got doc")
-		log.Println(doc)
+			errorCode, err := mod.ExportedFunction("FPDF_GetLastError").Call(ctx)
+			if err != nil {
+				log.Panicln(err)
+			}
 
-		errorCode, err := mod.ExportedFunction("FPDF_GetLastError").Call(ctx)
-		if err != nil {
-			log.Panicln(err)
-		}
+			if errorCode[0] != 0 {
+				log.Fatalf("Could not load document: %d", errorCode[0])
+			}
 
-		log.Println("Errorcode")
-		log.Println(errorCode)
-	*/
+			width := 2000
+			height := 2000
 
-	rect := image.Rect(0, 0, 2000, 2000)
+			rect := image.Rect(0, 0, width, height)
 
-	// We do not allocate the memory yet since we take it directly from memory in WASM.
-	img := &image.RGBA{
-		Pix:    nil,
-		Stride: 4 * rect.Dx(),
-		Rect:   rect,
-	}
+			// We do not allocate the memory yet since we take it directly from memory in WASM.
+			img := &image.RGBA{
+				Pix:    nil,
+				Stride: 4 * rect.Dx(),
+				Rect:   rect,
+			}
 
-	// RGBA = 4 bytes per pixel
-	bufSize := 4 * rect.Dx() * rect.Dy()
+			// RGBA = 4 bytes per pixel
+			bufSize := 4 * rect.Dx() * rect.Dy()
 
-	results, err = malloc.Call(ctx, uint64(bufSize))
-	if err != nil {
-		log.Panicln(err)
-	}
+			results, err := malloc.Call(ctx, uint64(bufSize))
+			if err != nil {
+				log.Panicln(err)
+			}
 
-	bitmap, err := mod.ExportedFunction("FPDFBitmap_CreateEx").Call(ctx, 2000, 2000, 4, results[0], uint64(img.Stride))
-	if err != nil {
-		log.Panicln(err)
-	}
+			bitmap, err := mod.ExportedFunction("FPDFBitmap_CreateEx").Call(ctx, uint64(width), uint64(height), 4, results[0], uint64(img.Stride))
+			if err != nil {
+				log.Panicln(err)
+			}
 
-	log.Println("bitmap")
-	log.Println(bitmap)
+			if bitmap[0] == 0 {
+				log.Fatal("Bitmap could not be created")
+			}
 
-	fill, err := mod.ExportedFunction("FPDFBitmap_FillRect").Call(ctx, bitmap[0], 0, 0, 2000, 2000, 0xFFFFFFFF)
-	if err != nil {
-		log.Panicln(err)
-	}
+			_, err = mod.ExportedFunction("FPDFBitmap_FillRect").Call(ctx, bitmap[0], 0, 0, uint64(width), uint64(height), 0xFFFFFFFF)
+			if err != nil {
+				log.Panicln(err)
+			}
 
-	log.Println("fill")
-	log.Println(fill)
+			page, err := mod.ExportedFunction("FPDF_LoadPage").Call(ctx, doc[0], 0)
+			if err != nil {
+				log.Panicln(err)
+			}
 
-	//log.Println(mod.ExportedMemory("asm"))
-	//log.Println(r.Module("asm").ExportedMemory("__indirect_function_table"))
+			if page[0] == 0 {
+				log.Fatal("Page could not be loaded")
+			}
 
-	page, err := mod.ExportedFunction("FPDF_LoadPage").Call(ctx, doc[0], 0)
-	if err != nil {
-		log.Panicln(err)
-	}
+			_, err = mod.ExportedFunction("FPDF_RenderPageBitmap").Call(ctx, bitmap[0], page[0], 0, 0, uint64(width), uint64(height), 0, 0x10)
+			if err != nil {
+				log.Panicln(err)
+			}
 
-	log.Println("page")
-	log.Println(page)
+			log.Printf("Rendering from file took %s", time.Since(start))
 
-	render, err := mod.ExportedFunction("FPDF_RenderPageBitmap").Call(ctx, bitmap[0], page[0], 0, 0, 2000, 2000, 0, 0x10)
-	if err != nil {
-		log.Panicln(err)
-	}
+			b, _ := mod.Memory().Read(ctx, uint32(results[0]), uint32(bufSize))
+			if err != nil {
+				log.Panicln(err)
+			}
 
-	log.Println("render")
-	log.Println(render)
+			img.Pix = b
 
-	b, _ := mod.Memory().Read(ctx, uint32(results[0]), uint32(bufSize))
-	if err != nil {
-		log.Panicln(err)
-	}
+			_, err = mod.ExportedFunction("FPDF_ClosePage").Call(ctx, page[0])
+			if err != nil {
+				log.Panicln(err)
+			}
 
-	img.Pix = b
+			_, err = mod.ExportedFunction("FPDF_CloseDocument").Call(ctx, doc[0])
+			if err != nil {
+				log.Panicln(err)
+			}
 
-	f, err := os.Create("img.jpg")
-	if err != nil {
-		panic(err)
-	}
-	defer f.Close()
-	if err = jpeg.Encode(f, img, nil); err != nil {
-		log.Printf("failed to encode: %v", err)
+			/*
+				f, err := os.Create("img.jpg")
+				if err != nil {
+					panic(err)
+				}
+				defer f.Close()
+				if err = jpeg.Encode(f, img, nil); err != nil {
+					log.Printf("failed to encode: %v", err)
+				}*/
+		}()
 	}
 }
