@@ -18,6 +18,7 @@ import (
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/internal/wasm"
+	"github.com/tetratelabs/wazero/internal/wasmruntime"
 )
 
 // MustInstantiate calls Instantiate or panics on error.
@@ -116,12 +117,12 @@ var notifyMemoryGrowth = &wasm.HostFunc{
 //		(param i32 i32 i32 i32 i32) (result i32))))
 //
 // So, the above function if invoked `invoke_iiiii(1234, 1, 2, 3, 4)` would
-// lookup the funcref at table index 1234, which has a type i32i32i3232_i32 and
-// invoke it with the remaining parameters,
+// look up the funcref at table index 1234, which has a type i32i32i3232_i32
+// and invoke it with the remaining parameters,
 const (
 	i32 = wasm.ValueTypeI32
 
-	functionInvokeI     = "invoke_ii"
+	functionInvokeI     = "invoke_i"
 	functionInvokeIi    = "invoke_ii"
 	functionInvokeIii   = "invoke_iii"
 	functionInvokeIiii  = "invoke_iiii"
@@ -147,7 +148,7 @@ var invokeI = &wasm.HostFunc{
 }
 
 func invokeIFn(ctx context.Context, mod api.Module, params []uint64) []uint64 {
-	ret, err := mod.(*wasm.CallContext).CallDynamic(ctx, "v_i32", wasm.Index(params[0]), nil)
+	ret, err := callDynamic(ctx, mod.(*wasm.CallContext), "v_i32", wasm.Index(params[0]), nil)
 	if err != nil {
 		panic(err)
 	}
@@ -167,7 +168,7 @@ var invokeIi = &wasm.HostFunc{
 }
 
 func invokeIiFn(ctx context.Context, mod api.Module, params []uint64) []uint64 {
-	ret, err := mod.(*wasm.CallContext).CallDynamic(ctx, "i32_i32", wasm.Index(params[0]), params[1:])
+	ret, err := callDynamic(ctx, mod.(*wasm.CallContext), "i32_i32", wasm.Index(params[0]), params[1:])
 	if err != nil {
 		panic(err)
 	}
@@ -187,7 +188,7 @@ var invokeIii = &wasm.HostFunc{
 }
 
 func invokeIiiFn(ctx context.Context, mod api.Module, params []uint64) []uint64 {
-	ret, err := mod.(*wasm.CallContext).CallDynamic(ctx, "i32i32_i32", wasm.Index(params[0]), params[1:])
+	ret, err := callDynamic(ctx, mod.(*wasm.CallContext), "i32i32_i32", wasm.Index(params[0]), params[1:])
 	if err != nil {
 		panic(err)
 	}
@@ -207,7 +208,7 @@ var invokeIiii = &wasm.HostFunc{
 }
 
 func invokeIiiiFn(ctx context.Context, mod api.Module, params []uint64) []uint64 {
-	ret, err := mod.(*wasm.CallContext).CallDynamic(ctx, "i32i32i32_i32", wasm.Index(params[0]), params[1:])
+	ret, err := callDynamic(ctx, mod.(*wasm.CallContext), "i32i32i32_i32", wasm.Index(params[0]), params[1:])
 	if err != nil {
 		panic(err)
 	}
@@ -227,7 +228,7 @@ var invokeIiiii = &wasm.HostFunc{
 }
 
 func invokeIiiiiFn(ctx context.Context, mod api.Module, params []uint64) []uint64 {
-	ret, err := mod.(*wasm.CallContext).CallDynamic(ctx, "i32i32i32i32_i32", wasm.Index(params[0]), params[1:])
+	ret, err := callDynamic(ctx, mod.(*wasm.CallContext), "i32i32i32i32_i32", wasm.Index(params[0]), params[1:])
 	if err != nil {
 		panic(err)
 	}
@@ -247,7 +248,7 @@ var invokeV = &wasm.HostFunc{
 }
 
 func invokeVFn(ctx context.Context, mod api.Module, params []uint64) []uint64 {
-	ret, err := mod.(*wasm.CallContext).CallDynamic(ctx, "v_v", wasm.Index(params[0]), nil)
+	ret, err := callDynamic(ctx, mod.(*wasm.CallContext), "v_v", wasm.Index(params[0]), nil)
 	if err != nil {
 		panic(err)
 	}
@@ -267,7 +268,7 @@ var invokeVi = &wasm.HostFunc{
 }
 
 func invokeViFn(ctx context.Context, mod api.Module, params []uint64) []uint64 {
-	ret, err := mod.(*wasm.CallContext).CallDynamic(ctx, "i32_v", wasm.Index(params[0]), params[1:])
+	ret, err := callDynamic(ctx, mod.(*wasm.CallContext), "i32_v", wasm.Index(params[0]), params[1:])
 	if err != nil {
 		panic(err)
 	}
@@ -287,7 +288,7 @@ var invokeVii = &wasm.HostFunc{
 }
 
 func invokeViiFn(ctx context.Context, mod api.Module, params []uint64) []uint64 {
-	ret, err := mod.(*wasm.CallContext).CallDynamic(ctx, "i32i32_v", wasm.Index(params[0]), params[1:])
+	ret, err := callDynamic(ctx, mod.(*wasm.CallContext), "i32i32_v", wasm.Index(params[0]), params[1:])
 	if err != nil {
 		panic(err)
 	}
@@ -307,7 +308,7 @@ var invokeViii = &wasm.HostFunc{
 }
 
 func invokeViiiFn(ctx context.Context, mod api.Module, params []uint64) []uint64 {
-	ret, err := mod.(*wasm.CallContext).CallDynamic(ctx, "i32i32i32_v", wasm.Index(params[0]), params[1:])
+	ret, err := callDynamic(ctx, mod.(*wasm.CallContext), "i32i32i32_v", wasm.Index(params[0]), params[1:])
 	if err != nil {
 		panic(err)
 	}
@@ -327,9 +328,34 @@ var invokeViiii = &wasm.HostFunc{
 }
 
 func invokeViiiiFn(ctx context.Context, mod api.Module, params []uint64) []uint64 {
-	ret, err := mod.(*wasm.CallContext).CallDynamic(ctx, "i32i32i32i32_v", wasm.Index(params[0]), params[1:])
+	ret, err := callDynamic(ctx, mod.(*wasm.CallContext), "i32i32i32i32_v", wasm.Index(params[0]), params[1:])
 	if err != nil {
 		panic(err)
 	}
 	return ret
+}
+
+// callDynamic special cases dynamic calls needed for emscripten `invoke_`
+// functions such as `invoke_ii` or `invoke_v`.
+//
+// # Parameters
+//
+//   - ctx: the propagated go context.
+//   - callCtx: the incoming context of the `invoke_` function.
+//   - typeName: used to look up the function type. ex "i32i32_i32" or "v_i32"
+//   - tableOffset: position in the module's only table
+//   - params: parameters to the funcref
+func callDynamic(ctx context.Context, callCtx *wasm.CallContext, typeName string, tableOffset wasm.Index, params []uint64) (results []uint64, err error) {
+	m := callCtx.Module()
+	typeId, ok := m.TypeIDIndex[typeName]
+	if !ok {
+		return nil, wasmruntime.ErrRuntimeIndirectCallTypeMismatch
+	}
+
+	t := m.Tables[0] // Emscripten doesn't use multiple tables
+	idx, err := m.Engine.LookupFunction(t, typeId, tableOffset)
+	if err != nil {
+		return nil, err
+	}
+	return callCtx.Function(idx).Call(ctx, params...)
 }

@@ -144,29 +144,9 @@ func (m *CallContext) ExportedFunction(name string) api.Function {
 	return m.function(exp.Function)
 }
 
-// CallDynamic special cases dynamic calls needed for emscripten `invoke_`
-// functions such as `invoke_ii` or `invoke_v`. This is exposed in CallContext
-// for internal convenience vs exposing it generally as the only known use case
-// is emscripten.
-//
-// # Parameters
-//
-//   - ctx: the incoming context of the `invoke_` function.
-//   - typeName: used to lookup the function type. ex "i32i32_i32" or "v_i32"
-//   - tableOffset: position in the module's only table
-//   - params: parameters to the funcref
-func (m *CallContext) CallDynamic(ctx context.Context, typeName string, tableOffset Index, params []uint64) (results []uint64, err error) {
-	typeId, ok := m.module.TypeIDIndex[typeName]
-	if !ok {
-		return nil, fmt.Errorf("unknown function type %s", typeName)
-	}
-	t := m.module.Tables[0] // static until feature multi-module
-	me := m.module.Functions[0].Module.Engine
-	f, err := me.LookupFunction(t, typeId, tableOffset)
-	if err != nil {
-		return nil, err
-	}
-	return m.function(f).Call(ctx, params...)
+// Module is exposed for emscripten.
+func (m *CallContext) Module() *ModuleInstance {
+	return m.module
 }
 
 func (m *CallContext) Function(funcIdx Index) api.Function {

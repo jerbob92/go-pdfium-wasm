@@ -775,21 +775,25 @@ func (e *moduleEngine) NewCallEngine(callCtx *wasm.CallContext, f *wasm.Function
 }
 
 // LookupFunction implements the same method as documented on wasm.ModuleEngine.
-func (e *moduleEngine) LookupFunction(t *wasm.TableInstance, typeId wasm.FunctionTypeID, idx wasm.Index) (*wasm.FunctionInstance, error) {
-	if idx >= uint32(len(t.References)) {
-		return nil, wasmruntime.ErrRuntimeInvalidTableAccess
+func (e *moduleEngine) LookupFunction(t *wasm.TableInstance, typeId wasm.FunctionTypeID, tableOffset wasm.Index) (idx wasm.Index, err error) {
+	if tableOffset >= uint32(len(t.References)) {
+		err = wasmruntime.ErrRuntimeInvalidTableAccess
+		return
 	}
-	rawPtr := t.References[idx]
+	rawPtr := t.References[tableOffset]
 	if rawPtr == 0 {
-		return nil, wasmruntime.ErrRuntimeInvalidTableAccess
+		err = wasmruntime.ErrRuntimeInvalidTableAccess
+		return
 	}
 
 	tf := functionFromUintptr(rawPtr)
 	if tf.source.TypeID != typeId {
-		return nil, wasmruntime.ErrRuntimeIndirectCallTypeMismatch
+		err = wasmruntime.ErrRuntimeIndirectCallTypeMismatch
+		return
 	}
+	idx = tf.source.Idx
 
-	return tf.source, nil
+	return
 }
 
 // Call implements the same method as documented on wasm.CallEngine.
