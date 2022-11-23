@@ -23,7 +23,7 @@ index f3bb425f6..117a8da46 100644
   * Open flags used by `path_open`.
   */
 diff --git a/system/lib/standalone/standalone.c b/system/lib/standalone/standalone.c
-index 7b11a8131..8faff8a25 100644
+index 7b11a8131..715ffa397 100644
 --- a/system/lib/standalone/standalone.c
 +++ b/system/lib/standalone/standalone.c
 @@ -5,6 +5,7 @@
@@ -45,7 +45,7 @@ index 7b11a8131..8faff8a25 100644
  
  #include <emscripten.h>
  #include <emscripten/heap.h>
-@@ -81,22 +86,110 @@ __attribute__((__weak__)) int _munmap_js(
+@@ -81,25 +86,113 @@ __attribute__((__weak__)) int _munmap_js(
    return -ENOSYS;
  }
  
@@ -159,8 +159,25 @@ index 7b11a8131..8faff8a25 100644
 +  return newfd;
  }
  
- __attribute__((__weak__)) int __syscall_ioctl(int fd, int op, ...) {
-@@ -107,15 +200,243 @@ __attribute__((__weak__)) int __syscall_fcntl64(int fd, int cmd, ...) {
+-__attribute__((__weak__)) int __syscall_ioctl(int fd, int op, ...) {
++__attribute__((__weak__)) int __syscall_ioctl(int fd, int request, ...) {
+   return -ENOSYS;
+ }
+ 
+@@ -107,15 +200,257 @@ __attribute__((__weak__)) int __syscall_fcntl64(int fd, int cmd, ...) {
+   return -ENOSYS;
+ }
+ 
+-__attribute__((__weak__)) int __syscall_fstat64(int fd, intptr_t buf) {
++__attribute__((__weak__)) int __syscall_ftruncate64(int fd, uint64_t size) {
++  return -ENOSYS;
++}
++
++__attribute__((__weak__)) int __syscall_rmdir(intptr_t path) {
++  return -ENOSYS;
++}
++
++__attribute__((__weak__)) int __syscall_unlinkat(int dirfd, intptr_t path, int flags) {
    return -ENOSYS;
  }
  
@@ -200,8 +217,7 @@ index 7b11a8131..8faff8a25 100644
 +  }
 +}
 +
- __attribute__((__weak__)) int __syscall_fstat64(int fd, intptr_t buf) {
--  return -ENOSYS;
++__attribute__((__weak__)) int __syscall_fstat64(int fd, intptr_t buf) {
 +  __wasi_filestat_t internal_stat;
 +  __wasi_errno_t error =
 +    __wasi_fd_filestat_get(fd, &internal_stat);
@@ -225,7 +241,7 @@ index 7b11a8131..8faff8a25 100644
 +  __wasi_dirent_t entry;
 +
 +  // Create new buffer size to save same amount of __wasi_dirent_t as dirp records.
-+  size_t buffer_size = (count / sizeof(struct dirent)) * sizeof(entry);
++  size_t buffer_size = (count / sizeof(struct dirent)) * (sizeof(entry) + 256);
 +  char *buffer = malloc(buffer_size);
 +  if (buffer == NULL) {
 +    return -1;
@@ -291,6 +307,8 @@ index 7b11a8131..8faff8a25 100644
 +    // Skip entries having null bytes in the filename.
 +    const char *name = buffer + buffer_processed + sizeof(entry);
 +    buffer_processed += entry_size;
++
++    // @todo: check whether name fits in de->d_name?
 +    if (memchr(name, '\0', entry.d_namlen) != NULL) {
 +      continue;
 +    }
@@ -395,8 +413,8 @@ index 7b11a8131..8faff8a25 100644
 +__attribute__((__weak__))
 +int __syscall_lstat64(intptr_t path, intptr_t buf) {
 +  return __syscall_newfstatat(AT_FDCWD, path, buf, AT_SYMLINK_NOFOLLOW);
- }
- 
++}
++
  // There is no good source of entropy without an import. Make this weak so that
  // it can be replaced with a pRNG or a proper import.
  __attribute__((__weak__))
@@ -407,7 +425,34 @@ index 7b11a8131..8faff8a25 100644
  }
  
  // Emscripten additions
-@@ -193,29 +514,3 @@ void _wasmfs_get_preloaded_child_path(int index, void* buffer) {}
+@@ -153,6 +488,12 @@ double emscripten_get_now(void) {
+   return (1000 * clock()) / (double)CLOCKS_PER_SEC;
+ }
+ 
++__attribute__((__weak__))
++void _emscripten_throw_longjmp() {
++  _emscripten_err("The program tried to do an invalid longjmp, the program will exit now...");
++  abort();
++}
++
+ // C++ ABI
+ 
+ // Emscripten disables exception catching by default, but not throwing. That
+@@ -166,11 +507,13 @@ double emscripten_get_now(void) {
+ 
+ __attribute__((__weak__))
+ void __cxa_throw(void* ptr, void* type, void* destructor) {
++  _emscripten_err("The program tried to throw an exception, this is not supported in standalone mode, the program will exit now...");
+   abort();
+ }
+ 
+ __attribute__((__weak__))
+ void* __cxa_allocate_exception(size_t thrown_size) {
++  _emscripten_err("The program tried to allocate an exception, this is not supported in standalone mode, the program will exit now...");
+   abort();
+ }
+ 
+@@ -193,29 +536,3 @@ void _wasmfs_get_preloaded_child_path(int index, void* buffer) {}
  
  void _wasmfs_get_preloaded_path_name(int index, void* buffer) {}
  
