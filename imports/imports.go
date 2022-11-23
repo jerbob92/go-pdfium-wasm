@@ -41,8 +41,4 @@ type functionExporter struct{}
 // ExportFunctions implements FunctionExporter.ExportFunctions
 func (e *functionExporter) ExportFunctions(b wazero.HostModuleBuilder) {
 	b.NewFunctionBuilder().WithFunc(emscripten_throw_longjmp).Export("_emscripten_throw_longjmp")
-
-	b.NewFunctionBuilder().WithFunc(sys_ftruncate64).Export("__syscall_ftruncate64")
-	b.NewFunctionBuilder().WithFunc(sys_unlinkat).Export("__syscall_unlinkat")
-	b.NewFunctionBuilder().WithFunc(sys_rmdir).Export("__syscall_rmdir")
 }
