@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/experimental"
 	"github.com/tetratelabs/wazero/internal/compilationcache"
 	"github.com/tetratelabs/wazero/internal/platform"
 	"github.com/tetratelabs/wazero/internal/version"
@@ -118,6 +119,20 @@ type (
 
 		// initialFn is the initial function for this call engine.
 		initialFn *function
+
+		// ctx is the context.Context passed to all the host function calls.
+		// This is modified when there's a function listener call, otherwise it's always the context.Context
+		// passed to the Call API.
+		ctx context.Context
+		// contextStack is a stack of contexts which is pushed and popped by function listeners.
+		// This is used and modified when there are function listeners.
+		contextStack *contextStack
+	}
+
+	// contextStack is a stack of context.Context.
+	contextStack struct {
+		self context.Context
+		prev *contextStack
 	}
 
 	// moduleContext holds the per-function call specific module information.
@@ -246,6 +261,8 @@ type (
 		indexInModule wasm.Index
 		// sourceModule is the module from which this function is compiled. For logging purpose.
 		sourceModule *wasm.Module
+		// listener holds a listener to notify when this function is called.
+		listener experimental.FunctionListener
 	}
 )
 
@@ -441,44 +458,52 @@ func (e *engine) DeleteCompiledModule(module *wasm.Module) {
 }
 
 // CompileModule implements the same method as documented on wasm.Engine.
-func (e *engine) CompileModule(ctx context.Context, module *wasm.Module) error {
+func (e *engine) CompileModule(ctx context.Context, module *wasm.Module, listeners []experimental.FunctionListener) error {
 	if _, ok, err := e.getCodes(module); ok { // cache hit!
 		return nil
 	} else if err != nil {
 		return err
 	}
 
-	funcs := make([]*code, 0, len(module.FunctionSection))
-
 	irs, err := wazeroir.CompileFunctions(ctx, e.enabledFeatures, callFrameDataSizeInUint64, module)
 	if err != nil {
 		return err
 	}
-	for funcIndex, ir := range irs {
+
+	importedFuncs := module.ImportFuncCount()
+	funcs := make([]*code, len(module.FunctionSection))
+	ln := len(listeners)
+	for i, ir := range irs {
+		var lsn experimental.FunctionListener
+		if i < ln {
+			lsn = listeners[i]
+		}
+
+		funcIndex := wasm.Index(i)
 		var compiled *code
 		if ir.GoFunc != nil {
-			if compiled, err = compileGoDefinedHostFunction(ir); err != nil {
-				def := module.FunctionDefinitionSection[uint32(funcIndex)+module.ImportFuncCount()]
+			if compiled, err = compileGoDefinedHostFunction(ir, lsn != nil); err != nil {
+				def := module.FunctionDefinitionSection[funcIndex+importedFuncs]
 				return fmt.Errorf("error compiling host go func[%s]: %w", def.DebugName(), err)
 			}
-		} else if compiled, err = compileWasmFunction(e.enabledFeatures, ir); err != nil {
-			def := module.FunctionDefinitionSection[uint32(funcIndex)+module.ImportFuncCount()]
+		} else if compiled, err = compileWasmFunction(e.enabledFeatures, ir, lsn != nil); err != nil {
+			def := module.FunctionDefinitionSection[funcIndex+importedFuncs]
 			return fmt.Errorf("error compiling wasm func[%s]: %w", def.DebugName(), err)
 		}
 
 		// As this uses mmap, we need to munmap on the compiled machine code when it's GCed.
 		e.setFinalizer(compiled, releaseCode)
 
-		compiled.indexInModule = wasm.Index(funcIndex)
+		compiled.listener = lsn
+		compiled.indexInModule = funcIndex
 		compiled.sourceModule = module
-
-		funcs = append(funcs, compiled)
+		funcs[funcIndex] = compiled
 	}
 	return e.addCodes(module, funcs)
 }
 
 // NewModuleEngine implements the same method as documented on wasm.Engine.
-func (e *engine) NewModuleEngine(name string, module *wasm.Module, importedFunctions, moduleFunctions []*wasm.FunctionInstance, tables []*wasm.TableInstance, tableInits []wasm.TableInitEntry) (wasm.ModuleEngine, error) {
+func (e *engine) NewModuleEngine(name string, module *wasm.Module, importedFunctions, moduleFunctions []*wasm.FunctionInstance) (wasm.ModuleEngine, error) {
 	imported := len(importedFunctions)
 	me := &moduleEngine{
 		name:                  name,
@@ -503,25 +528,17 @@ func (e *engine) NewModuleEngine(name string, module *wasm.Module, importedFunct
 		function := c.createFunction(f)
 		me.functions[imported+i] = function
 	}
-
-	for _, init := range tableInits {
-		references := tables[init.TableIndex].References
-		if int(init.Offset)+(len(init.FunctionIndexes)) > len(references) {
-			return me, wasm.ErrElementOffsetOutOfBounds
-		}
-
-		for i, funcIdx := range init.FunctionIndexes {
-			if funcIdx != nil {
-				references[init.Offset+uint32(i)] = uintptr(unsafe.Pointer(me.functions[*funcIdx]))
-			}
-		}
-	}
 	return me, nil
 }
 
 // Name implements the same method as documented on wasm.ModuleEngine.
 func (e *moduleEngine) Name() string {
 	return e.name
+}
+
+// FunctionInstanceReference implements the same method as documented on wasm.ModuleEngine.
+func (e *moduleEngine) FunctionInstanceReference(funcIndex wasm.Index) wasm.Reference {
+	return uintptr(unsafe.Pointer(e.functions[funcIndex]))
 }
 
 // CreateFuncElementInstance implements the same method as documented on wasm.ModuleEngine.
@@ -572,7 +589,7 @@ func (e *moduleEngine) NewCallEngine(callCtx *wasm.CallContext, f *wasm.Function
 
 // LookupFunction implements the same method as documented on wasm.ModuleEngine.
 func (e *moduleEngine) LookupFunction(t *wasm.TableInstance, typeId wasm.FunctionTypeID, tableOffset wasm.Index) (idx wasm.Index, err error) {
-	if tableOffset >= uint32(len(t.References)) {
+	if tableOffset >= uint32(len(t.References)) || t.Type != wasm.RefTypeFuncref {
 		err = wasmruntime.ErrRuntimeInvalidTableAccess
 		return
 	}
@@ -629,7 +646,13 @@ func (ce *callEngine) Call(ctx context.Context, callCtx *wasm.CallContext, param
 	ce.initializeStack(tp, params)
 	ce.execWasmFunction(ctx, callCtx)
 
-	results = ce.stack[:tp.ResultNumInUint64]
+	// This returns a safe copy of the results, instead of a slice view. If we
+	// returned a re-slice, the caller could accidentally or purposefully
+	// corrupt the stack of subsequent calls
+	if resultCount := tp.ResultNumInUint64; resultCount > 0 {
+		results = make([]uint64, resultCount)
+		copy(results, ce.stack[:resultCount])
+	}
 	return
 }
 
@@ -798,6 +821,8 @@ const (
 	builtinFunctionIndexMemoryGrow wasm.Index = iota
 	builtinFunctionIndexGrowStack
 	builtinFunctionIndexTableGrow
+	builtinFunctionIndexFunctionListenerBefore
+	builtinFunctionIndexFunctionListenerAfter
 	// builtinFunctionIndexBreakPoint is internal (only for wazero developers). Disabled by default.
 	builtinFunctionIndexBreakPoint
 )
@@ -805,6 +830,7 @@ const (
 func (ce *callEngine) execWasmFunction(ctx context.Context, callCtx *wasm.CallContext) {
 	codeAddr := ce.initialFn.codeInitialAddress
 	modAddr := ce.initialFn.moduleInstanceAddress
+	ce.ctx = ctx
 
 entry:
 	{
@@ -817,28 +843,39 @@ entry:
 		case nativeCallStatusCodeCallGoHostFunction:
 			calleeHostFunction := ce.moduleContext.fn
 			base := int(ce.stackBasePointerInBytes >> 3)
-			params := ce.stack[base : base+len(calleeHostFunction.source.Type.Params)]
+
+			// In the compiler engine, ce.stack has enough capacity for the
+			// max of param or result length, so we don't need to grow when
+			// there are more results than parameters.
+			stackLen := calleeHostFunction.source.Type.ParamNumInUint64
+			if resultLen := calleeHostFunction.source.Type.ResultNumInUint64; resultLen > stackLen {
+				stackLen = resultLen
+			}
+			stack := ce.stack[base : base+stackLen]
+
 			fn := calleeHostFunction.source.GoFunc
-			var results []uint64
 			switch fn := fn.(type) {
 			case api.GoModuleFunction:
-				results = fn.Call(ctx, callCtx.WithMemory(ce.memoryInstance), params)
+				fn.Call(ce.ctx, callCtx.WithMemory(ce.memoryInstance), stack)
 			case api.GoFunction:
-				results = fn.Call(ctx, params)
+				fn.Call(ce.ctx, stack)
 			}
 
-			copy(ce.stack[base:], results)
 			codeAddr, modAddr = ce.returnAddress, ce.moduleInstanceAddress
 			goto entry
 		case nativeCallStatusCodeCallBuiltInFunction:
 			caller := ce.moduleContext.fn
 			switch ce.exitContext.builtinFunctionCallIndex {
 			case builtinFunctionIndexMemoryGrow:
-				ce.builtinFunctionMemoryGrow(ctx, caller.source.Module.Memory)
+				ce.builtinFunctionMemoryGrow(ce.ctx, caller.source.Module.Memory)
 			case builtinFunctionIndexGrowStack:
 				ce.builtinFunctionGrowStack(caller.stackPointerCeil)
 			case builtinFunctionIndexTableGrow:
-				ce.builtinFunctionTableGrow(ctx, caller.source.Module.Tables)
+				ce.builtinFunctionTableGrow(ce.ctx, caller.source.Module.Tables)
+			case builtinFunctionIndexFunctionListenerBefore:
+				ce.builtinFunctionFunctionListenerBefore(ce.ctx, caller)
+			case builtinFunctionIndexFunctionListenerAfter:
+				ce.builtinFunctionFunctionListenerAfter(ce.ctx, caller)
 			}
 			if false {
 				if ce.exitContext.builtinFunctionCallIndex == builtinFunctionIndexBreakPoint {
@@ -903,8 +940,23 @@ func (ce *callEngine) builtinFunctionTableGrow(ctx context.Context, tables []*wa
 	ce.pushValue(uint64(res))
 }
 
-func compileGoDefinedHostFunction(ir *wazeroir.CompilationResult) (*code, error) {
-	compiler, err := newCompiler(ir)
+func (ce *callEngine) builtinFunctionFunctionListenerBefore(ctx context.Context, fn *function) {
+	base := int(ce.stackBasePointerInBytes >> 3)
+	listerCtx := fn.parent.listener.Before(ctx, fn.source.Definition, ce.stack[base:base+fn.source.Type.ParamNumInUint64])
+	prevStackTop := ce.contextStack
+	ce.contextStack = &contextStack{self: ctx, prev: prevStackTop}
+	ce.ctx = listerCtx
+}
+
+func (ce *callEngine) builtinFunctionFunctionListenerAfter(ctx context.Context, fn *function) {
+	base := int(ce.stackBasePointerInBytes >> 3)
+	fn.parent.listener.After(ctx, fn.source.Definition, nil, ce.stack[base:base+fn.source.Type.ResultNumInUint64])
+	ce.ctx = ce.contextStack.self
+	ce.contextStack = ce.contextStack.prev
+}
+
+func compileGoDefinedHostFunction(ir *wazeroir.CompilationResult, withListener bool) (*code, error) {
+	compiler, err := newCompiler(ir, withListener)
 	if err != nil {
 		return nil, err
 	}
@@ -921,8 +973,8 @@ func compileGoDefinedHostFunction(ir *wazeroir.CompilationResult) (*code, error)
 	return &code{codeSegment: c}, nil
 }
 
-func compileWasmFunction(_ api.CoreFeatures, ir *wazeroir.CompilationResult) (*code, error) {
-	compiler, err := newCompiler(ir)
+func compileWasmFunction(_ api.CoreFeatures, ir *wazeroir.CompilationResult, withListener bool) (*code, error) {
+	compiler, err := newCompiler(ir, withListener)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize assembly builder: %w", err)
 	}

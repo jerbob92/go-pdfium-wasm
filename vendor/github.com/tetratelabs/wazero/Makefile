@@ -53,9 +53,12 @@ build.examples.as:
 
 # Use -fstage1 to avoid bugs in the new compiler
 # https://github.com/ziglang/zig/wiki/Self-Hosted-Compiler-Upgrade-Guide#is-it-time-to-upgrade
+%.wasm: %.zig
+	@(cd $(@D); zig build -fstage1 -Drelease-small=true)
+	@mv $(@D)/zig-out/*/$(@F) $(@D)
+
 .PHONY: build.examples.zig
-build.examples.zig:
-	@cd examples/allocation/zig/testdata/ && zig build -fstage1 -Drelease-small=true && mv zig-out/lib/greet.wasm .
+build.examples.zig: examples/allocation/zig/testdata/greet.wasm imports/wasi_snapshot_preview1/example/testdata/zig/cat.wasm
 
 tinygo_sources := examples/basic/testdata/add.go examples/allocation/tinygo/testdata/greet.go examples/cli/testdata/cli.go imports/wasi_snapshot_preview1/example/testdata/tinygo/cat.go
 .PHONY: build.examples.tinygo
@@ -65,7 +68,7 @@ build.examples.tinygo: $(tinygo_sources)
 	done
 
 # We use zig to build C as it is easy to install and embeds a copy of zig-cc.
-c_sources := imports/wasi_snapshot_preview1/example/testdata/zig-cc/cat.c
+c_sources := imports/wasi_snapshot_preview1/example/testdata/zig-cc/cat.c imports/wasi_snapshot_preview1/testdata/zig-cc/ls.c
 .PHONY: build.examples.zig-cc
 build.examples.zig-cc: $(c_sources)
 	@for f in $^; do \
@@ -100,9 +103,10 @@ build.examples.emscripten: $(emscripten_sources)
 
 %/greet.wasm : cargo_target := wasm32-unknown-unknown
 %/cat.wasm : cargo_target := wasm32-wasi
+%/ls.wasm : cargo_target := wasm32-wasi
 
 .PHONY: build.examples.rust
-build.examples.rust: examples/allocation/rust/testdata/greet.wasm imports/wasi_snapshot_preview1/example/testdata/cargo-wasi/cat.wasm
+build.examples.rust: examples/allocation/rust/testdata/greet.wasm imports/wasi_snapshot_preview1/example/testdata/cargo-wasi/cat.wasm imports/wasi_snapshot_preview1/testdata/cargo-wasi/ls.wasm
 
 # Builds rust using cargo normally, or cargo-wasi.
 %.wasm: %.rs
@@ -115,8 +119,8 @@ spectest_v1_testdata_dir := $(spectest_v1_dir)/testdata
 spec_version_v1 := wg-1.0
 spectest_v2_dir := $(spectest_base_dir)/v2
 spectest_v2_testdata_dir := $(spectest_v2_dir)/testdata
-# Latest draft state as of Oct 3, 2022.
-spec_version_v2 := 8a352708cffeb71206ca49a0f743bdc57269fb1a
+# Latest draft state as of Nov 9, 2022.
+spec_version_v2 := f9b461a312426a60f2f81dcb19b39b66b90a5447
 
 .PHONY: build.spectest
 build.spectest:
@@ -220,3 +224,8 @@ site: ## Serve website content
 clean: ## Ensure a clean build
 	@rm -rf dist build coverage.txt
 	@go clean -testcache
+
+fuzz_timeout_seconds ?= 10
+.PHONY: fuzz
+fuzz:
+	@cd internal/integration_test/fuzz && cargo fuzz run basic -- -max_total_time=$(fuzz_timeout_seconds)

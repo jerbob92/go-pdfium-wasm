@@ -10,10 +10,11 @@ import (
 	"os"
 	"time"
 
+	"jerbob92/go-pdfium-wasm/imports"
+
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/experimental"
 	"github.com/tetratelabs/wazero/experimental/logging"
-	"github.com/tetratelabs/wazero/imports/emscripten"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
@@ -38,7 +39,7 @@ func main() {
 	}
 
 	// Add basic Emscripten specific methods.
-	if _, err := emscripten.Instantiate(ctx, r); err != nil {
+	if _, err := imports.Instantiate(ctx, r); err != nil {
 		log.Panicln(err)
 	}
 

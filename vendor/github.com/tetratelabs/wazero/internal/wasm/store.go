@@ -3,12 +3,10 @@ package wasm
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/tetratelabs/wazero/api"
-	experimentalapi "github.com/tetratelabs/wazero/experimental"
 	"github.com/tetratelabs/wazero/internal/ieee754"
 	"github.com/tetratelabs/wazero/internal/leb128"
 	internalsys "github.com/tetratelabs/wazero/internal/sys"
@@ -140,9 +138,6 @@ type (
 
 		// Definition is known at compile time.
 		Definition api.FunctionDefinition
-
-		// Listener holds a listener to notify when this function is called.
-		Listener experimentalapi.FunctionListener
 	}
 
 	// GlobalInstance represents a global instance in a store.
@@ -195,6 +190,36 @@ func (m *ModuleInstance) buildElementInstances(elements []*ElementSegment) {
 			// Only passive elements can be access as element instances.
 			// See https://www.w3.org/TR/2022/WD-wasm-core-2-20220419/syntax/modules.html#element-segments
 			m.ElementInstances[i] = *m.Engine.CreateFuncElementInstance(elm.Init)
+		}
+	}
+}
+
+func (m *ModuleInstance) applyTableInits(tables []*TableInstance, tableInits []tableInitEntry) {
+	for _, init := range tableInits {
+		table := tables[init.tableIndex]
+		references := table.References
+		if int(init.offset)+len(init.functionIndexes) > len(references) ||
+			int(init.offset)+init.nullExternRefCount > len(references) {
+			// ErrElementOffsetOutOfBounds is the error raised when the active element offset exceeds the table length.
+			// Before CoreFeatureReferenceTypes, this was checked statically before instantiation, after the proposal,
+			// this must be raised as runtime error (as in assert_trap in spectest), not even an instantiation error.
+			// https://github.com/WebAssembly/spec/blob/d39195773112a22b245ffbe864bab6d1182ccb06/test/core/linking.wast#L264-L274
+			//
+			// In wazero, we ignore it since in any way, the instantiated module and engines are fine and can be used
+			// for function invocations.
+			return
+		}
+
+		if table.Type == RefTypeExternref {
+			for i := 0; i < init.nullExternRefCount; i++ {
+				references[init.offset+uint32(i)] = Reference(0)
+			}
+		} else {
+			for i, fnIndex := range init.functionIndexes {
+				if fnIndex != nil {
+					references[init.offset+uint32(i)] = m.Engine.FunctionInstanceReference(*fnIndex)
+				}
+			}
 		}
 	}
 }
@@ -299,7 +324,6 @@ func (s *Store) Instantiate(
 	module *Module,
 	name string,
 	sys *internalsys.Context,
-	listeners []experimentalapi.FunctionListener,
 ) (*CallContext, error) {
 	// Collect any imported modules to avoid locking the namespace too long.
 	importedModuleNames := map[string]struct{}{}
@@ -319,7 +343,7 @@ func (s *Store) Instantiate(
 	}
 
 	// Instantiate the module and add it to the namespace so that other modules can import it.
-	if callCtx, err := s.instantiate(ctx, ns, module, name, sys, listeners, importedModules); err != nil {
+	if callCtx, err := s.instantiate(ctx, ns, module, name, sys, importedModules); err != nil {
 		ns.deleteModule(name)
 		return nil, err
 	} else {
@@ -336,7 +360,6 @@ func (s *Store) instantiate(
 	module *Module,
 	name string,
 	sysCtx *internalsys.Context,
-	listeners []experimentalapi.FunctionListener,
 	modules map[string]*ModuleInstance,
 ) (*CallContext, error) {
 	typeIDs, err := s.getFunctionTypeIDs(module.TypeSection)
@@ -358,7 +381,7 @@ func (s *Store) instantiate(
 	globals, memory := module.buildGlobals(importedGlobals), module.buildMemory()
 
 	m := &ModuleInstance{Name: name, TypeIDs: typeIDs}
-	functions := m.BuildFunctions(module, listeners)
+	functions := m.BuildFunctions(module)
 
 	// Now we have all instances from imports and local ones, so ready to create a new ModuleInstance.
 	m.addSections(module, importedFunctions, functions, importedGlobals, globals, tables, importedMemory, memory, module.TypeSection)
@@ -373,12 +396,9 @@ func (s *Store) instantiate(
 	}
 
 	// Plus, we are ready to compile functions.
-	m.Engine, err = s.Engine.NewModuleEngine(name, module, importedFunctions, functions, tables, tableInit)
-	if err != nil && !errors.Is(err, ErrElementOffsetOutOfBounds) {
-		// ErrElementOffsetOutOfBounds is not an instantiation error, but rather runtime error, so we ignore it as
-		// in anyway the instantiated module and engines are fine and can be used for function invocations.
-		// See comments on ErrElementOffsetOutOfBounds.
-		return nil, fmt.Errorf("compilation failed: %w", err)
+	m.Engine, err = s.Engine.NewModuleEngine(name, module, importedFunctions, functions)
+	if err != nil {
+		return nil, err
 	}
 
 	// After engine creation, we can create the funcref element instances and initialize funcref type globals.
@@ -389,6 +409,8 @@ func (s *Store) instantiate(
 	if err = m.applyData(module.DataSection); err != nil {
 		return nil, err
 	}
+
+	m.applyTableInits(tables, tableInit)
 
 	// Compile the default context for calls to this module.
 	callCtx := NewCallContext(ns, m, sysCtx)

@@ -53,7 +53,7 @@ func ExternTypeName(et ExternType) string {
 //
 // The following describes how to convert between Wasm and Golang types:
 //
-//   - ValueTypeI32 - uint64(uint32,int32)
+//   - ValueTypeI32 - EncodeU32 DecodeU32 for uint32 / EncodeI32 DecodeI32 for int32
 //   - ValueTypeI64 - uint64(int64)
 //   - ValueTypeF32 - EncodeF32 DecodeF32 from float32
 //   - ValueTypeF64 - EncodeF64 DecodeF64 from float64
@@ -300,12 +300,28 @@ type Function interface {
 	// Call is not goroutine-safe, therefore it is recommended to create
 	// another Function if you want to invoke the same function concurrently.
 	// On the other hand, sequential invocations of Call is allowed.
+	//
+	// To safely encode/decode params/results expressed as uint64, users are encouraged to
+	// use api.EncodeXXX or DecodeXXX functions. See the docs on api.ValueType.
 	Call(ctx context.Context, params ...uint64) ([]uint64, error)
 }
 
 // GoModuleFunction is a Function implemented in Go instead of a wasm binary.
 // The Module parameter is the calling module, used to access memory or
 // exported functions. See GoModuleFunc for an example.
+//
+// The stack is includes any parameters encoded according to their ValueType.
+// Its length is the max of parameter or result length. When there are results,
+// write them in order beginning at index zero. Do not use the stack after the
+// function returns.
+//
+// Here's a typical way to read three parameters and write back one.
+//
+//	// read parameters off the stack in index order
+//	argv, argvBuf := api.DecodeU32(stack[0]), api.DecodeU32(stack[1])
+//
+//	// write results back to the stack in index order
+//	stack[0] = api.EncodeU32(ErrnoSuccess)
 //
 // This function can be non-deterministic or cause side effects. It also
 // has special properties not defined in the WebAssembly Core specification.
@@ -316,26 +332,32 @@ type Function interface {
 // use reflection or code generators instead. These approaches are more
 // idiomatic as they can map go types to ValueType. This type is exposed for
 // those willing to trade usability and safety for performance.
+//
+// To safely decode/encode values from/to the uint64 stack, users are encouraged to use
+// api.EncodeXXX or api.DecodeXXX functions. See the docs on api.ValueType.
 type GoModuleFunction interface {
-	Call(ctx context.Context, mod Module, params []uint64) []uint64
+	Call(ctx context.Context, mod Module, stack []uint64)
 }
 
 // GoModuleFunc is a convenience for defining an inlined function.
 //
-// For example, the following returns a uint32 value read from parameter zero:
+// For example, the following returns an uint32 value read from parameter zero:
 //
-//	api.GoModuleFunc(func(ctx context.Context, mod api.Module, params []uint64) []uint64 {
-//		ret, ok := mod.Memory().ReadUint32Le(ctx, uint32(params[0]))
+//	api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+//		offset := api.DecodeU32(params[0]) // read the parameter from the stack
+//
+//		ret, ok := mod.Memory().ReadUint32Le(ctx, offset)
 //		if !ok {
 //			panic("out of memory")
 //		}
-//		return []uint64{uint64(ret)}
-//	}
-type GoModuleFunc func(ctx context.Context, mod Module, params []uint64) []uint64
+//
+//		results[0] = api.EncodeU32(ret) // add the result back to the stack.
+//	})
+type GoModuleFunc func(ctx context.Context, mod Module, stack []uint64)
 
 // Call implements GoModuleFunction.Call.
-func (f GoModuleFunc) Call(ctx context.Context, mod Module, params []uint64) []uint64 {
-	return f(ctx, mod, params)
+func (f GoModuleFunc) Call(ctx context.Context, mod Module, stack []uint64) {
+	f(ctx, mod, stack)
 }
 
 // GoFunction is an optimized form of GoModuleFunction which doesn't require
@@ -344,23 +366,22 @@ func (f GoModuleFunc) Call(ctx context.Context, mod Module, params []uint64) []u
 // For example, this function does not need to use the importing module's
 // memory or exported functions.
 type GoFunction interface {
-	Call(ctx context.Context, params []uint64) []uint64
+	Call(ctx context.Context, stack []uint64)
 }
 
 // GoFunc is a convenience for defining an inlined function.
 //
 // For example, the following returns the sum of two uint32 parameters:
 //
-//	api.GoFunc(func(ctx context.Context, params []uint64) []uint64 {
-//		x, y := uint32(params[0]), uint32(params[1])
-//		sum := x + y
-//		return []uint64{sum}
-//	}
-type GoFunc func(ctx context.Context, params []uint64) []uint64
+//	api.GoFunc(func(ctx context.Context, stack []uint64) {
+//		x, y := api.DecodeU32(params[0]), api.DecodeU32(params[1])
+//		results[0] = api.EncodeU32(x + y)
+//	})
+type GoFunc func(ctx context.Context, stack []uint64)
 
 // Call implements GoFunction.Call.
-func (f GoFunc) Call(ctx context.Context, params []uint64) []uint64 {
-	return f(ctx, params)
+func (f GoFunc) Call(ctx context.Context, stack []uint64) {
+	f(ctx, stack)
 }
 
 // Global is a WebAssembly 1.0 (20191205) global exported from an instantiated module (wazero.Runtime InstantiateModule).
@@ -543,6 +564,21 @@ func DecodeExternref(input uint64) uintptr {
 // EncodeI32 encodes the input as a ValueTypeI32.
 func EncodeI32(input int32) uint64 {
 	return uint64(uint32(input))
+}
+
+// DecodeI32 decodes the input as a ValueTypeI32.
+func DecodeI32(input uint64) int32 {
+	return int32(input)
+}
+
+// EncodeU32 encodes the input as a ValueTypeI32.
+func EncodeU32(input uint32) uint64 {
+	return uint64(input)
+}
+
+// DecodeU32 decodes the input as a ValueTypeI32.
+func DecodeU32(input uint64) uint32 {
+	return uint32(input)
 }
 
 // EncodeI64 encodes the input as a ValueTypeI64.

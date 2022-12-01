@@ -1,4 +1,4 @@
-# github.com/tetratelabs/wazero v1.0.0-pre.3 => ../wazero
+# github.com/tetratelabs/wazero v1.0.0-pre.4
 ## explicit; go 1.17
 github.com/tetratelabs/wazero
 github.com/tetratelabs/wazero/api
@@ -27,4 +27,3 @@ github.com/tetratelabs/wazero/internal/wasmdebug
 github.com/tetratelabs/wazero/internal/wasmruntime
 github.com/tetratelabs/wazero/internal/wazeroir
 github.com/tetratelabs/wazero/sys
-# github.com/tetratelabs/wazero => ../wazero
